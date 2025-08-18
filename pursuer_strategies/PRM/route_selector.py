@@ -94,7 +94,8 @@ def prm_pursuer_policy(observation, self_index):
 
     if not PRM['nodes'] or not PRM['edges']:
         prm_generator = PRMGenerator(ENV_CONFIG['gridnum_width'], ENV_CONFIG['gridnum_height'],\
-                                      observation['obstacles'], num_nodes=200, connection_radius=0.8)
+                                      observation['obstacles'], 
+                                      ENV_CONFIG['cell_size'], num_nodes=200, connection_radius=0.8)
         nodes, edges = prm_generator.generate_prm()
         PRM['nodes'] = nodes
         PRM['edges'] = edges

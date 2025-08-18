@@ -5,9 +5,56 @@ import sys
 sys.path.append('.')
 from config import ENV_CONFIG
 
+
+# 定义一个节点类，储存更多节点信息方便计算
+class SunNode:
+    def __init__(self, point):
+        self.connections = [] #储存(角度，半径)数据对，角度取水平向右为 0 度，逆时针为正方向
+        self.position = point  # (x, y) 坐标
+     
+    def add_connection(self, angle, radius):
+        self.connections.append((angle, radius))            
+
+    def get_angle_iter(self):
+        iter_range = np.arange(0, 2 * np.pi, ENV_CONFIG["angle_iter_step"])
+        is_forbidden = np.zeros_like(iter_range, dtype=bool)
+        boundary_high = ENV_CONFIG["angle_of_repulsion_high"]
+        boundary_low = ENV_CONFIG["angle_of_repulsion_low"]
+
+        if not self.connections:
+            return iter_range  # 返回一个默认的角度迭代器
+        else:
+            for edge in self.connections:
+                angle = edge[0]
+
+                # 大于斥力引入长度边界，不做处理
+                if edge[1] > ENV_CONFIG["radius_boundary_of_repulsion"]:
+                    continue
+                
+                # 在斥力两级边界之间，做遍历范围限制
+                elif edge[1] > ENV_CONFIG["radius_boundary_of_repulsion_low"] and edge[1] <= ENV_CONFIG["radius_boundary_of_repulsion_high"]:
+                    start = angle - boundary_high
+                    end = angle + boundary_high
+                
+                elif edge[1] > 0 and edge[1] <= ENV_CONFIG["radius_boundary_of_repulsion_low"]:
+                    start = angle - boundary_low
+                    end = angle + boundary_low
+
+                if start < 0:
+                    is_forbidden |= (iter_range >= start + 2 * np.pi) | (iter_range < end)
+                elif end > 2 * np.pi:
+                    is_forbidden |= (iter_range >= start) | (iter_range < end - 2 * np.pi)
+                else:
+                    is_forbidden |= (iter_range < end) & (iter_range >= start)
+                
+            valid_iter_range = iter_range[~is_forbidden]
+            return valid_iter_range
+
+                    
+
 class PRMGenerator:
     """概率路图生成器，支持守卫节点和连接器节点"""
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=100, connection_radius=1.0):
+    def __init__(self, grid_width, grid_height, obstacles, cell_size, num_nodes=100, connection_radius=1.0):
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.obstacles = obstacles  # 障碍物为整数坐标
@@ -18,6 +65,7 @@ class PRMGenerator:
         self.connectors = []  # 连接器节点
         self.edges = []
         self.collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
+        self.cell_size = cell_size
 
     def _is_valid_position(self, x, y):
         """检查位置是否有效（不在障碍物附近且在边界内）"""
@@ -36,32 +84,6 @@ class PRMGenerator:
                     return False
                 if (int(gx1), int(gy1)) in self.obstacles:
                     return False
-        return True
-
-
-    def _is_valid_edge(self, start, end):
-        """检查边缘是否有效（不与障碍物相交）"""
-        # 使用Bresenham算法检查路径上的每个点
-        x0, y0 = start
-        x1, y1 = end
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-
-        while True:
-            if (int(x0), int(y0)) in self.obstacles:
-                return False
-            if x0 == x1 and y0 == y1:
-                break
-            err2 = err * 2
-            if err2 > -dy:
-                err -= dy
-                x0 += sx
-            if err2 < dx:
-                err += dx
-                y0 += sy
         return True
 
     def haltonian_sampling(self):
@@ -145,14 +167,14 @@ class PRMGenerator:
     def connect_edges(self):
         """连接守卫节点和连接器节点"""
         self.edges = []
-        all_nodes = self.guards + self.connectors
+        self.nodes = self.guards + self.connectors
 
-        if not all_nodes:
+        if not self.nodes:
             raise ValueError("请先生成节点！")
         
         # 使用简单的距离计算查找邻居
-        for i, node in enumerate(all_nodes):
-            for j, neighbor in enumerate(all_nodes):
+        for i, node in enumerate(self.nodes):
+            for j, neighbor in enumerate(self.nodes):
                 if i != j:  # 排除自身
                     distance = np.linalg.norm(np.array(node) - np.array(neighbor))
                     if distance <= self.connection_radius*0.8 \
@@ -172,12 +194,45 @@ class PRMGenerator:
             if not self._is_valid_position(x, y):
                 return False
         return True
+    
+    def _generate_strategic_seeds(self):
+        seeds = []
+        # 沿每个边界取若干点作为初始点
+        boundaries = [
+            [(i * self.cell_size, self.cell_size) for i in range(1, self.grid_width - 1, 5)],
+            [(i * self.cell_size, (self.grid_height - 2) * cell_size) for i in range(1, self.grid_width - 1, 5)],
+            [(self.cell_size, i * self.cell_size) for i in range(1,self.grid_height - 1, 5)],
+            [((self.grid_width - 2) * self.cell_size, i * self.cell_size) for i in range(1, self.grid_height - 1, 5)]
+        ]
 
-    def generate_prm(self):
+        for boundary in boundaries:
+            for point in boundary:
+                if self._is_valid_position(point[0], point[1]):
+                    seeds.append(SunNode(point))
+
+        return seeds
+    
+    def generate_sun_ray_graph(self):
+        # 从边界选一些点作为起始点
+        seed_points = self._generate_strategic_seeds()
+        open_list = seed_points
+        closed_list = []
+        while open_list:
+            current_node: SunNode = open_list.pop(0)
+            closed_list.append(current_node)
+
+            # 计算当前节点的角度迭代器
+            angle_iter = current_node.get_angle_iter()
+            
+            
+
+    def generate_prm(self, node_generate_mode):
         """生成概率路图"""
-        self.generate_nodes()
-        self.connect_edges()
-        self.nodes = self.guards + self.connectors
+        if node_generate_mode == "sampling":
+            self.generate_nodes()
+            self.connect_edges()
+        elif node_generate_mode == "sun_ray":
+            self.generate_sun_ray_graph()
         return self.nodes, self.edges
 
 
@@ -241,6 +296,7 @@ if __name__ == "__main__":
     grid_width = ENV_CONFIG['gridnum_width']
     grid_height = ENV_CONFIG['gridnum_height']
     cell_size = ENV_CONFIG['cell_size']
+    node_generate_mode = ENV_CONFIG['node_generate_mode']
     total_cells = grid_width * grid_height
     num_obstacles = int(total_cells * 0.2)  # 20% 障碍物
     obstacles = []
@@ -248,8 +304,8 @@ if __name__ == "__main__":
         x = np.random.randint(0, grid_width)
         y = np.random.randint(0, grid_height)
         obstacles.append((x, y))
-    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, num_nodes=200, connection_radius=0.8)
-    nodes, edges = prm_generator.generate_prm()
+    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, cell_size, num_nodes=200, connection_radius=0.8)
+    nodes, edges = prm_generator.generate_prm(node_generate_mode=node_generate_mode)
     print(len(nodes), "nodes generated")
     print(len(edges), "edges generated")
     renderer = PRMRenderer(grid_width, grid_height)
