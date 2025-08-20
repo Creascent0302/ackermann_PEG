@@ -4,19 +4,26 @@ from scipy.spatial import KDTree
 import sys
 sys.path.append('.')
 from config import ENV_CONFIG
-
+from collections import deque
+import math
 
 # 定义一个节点类，储存更多节点信息方便计算
 class SunNode:
     def __init__(self, point):
-        self.connections = [] #储存(角度，半径)数据对，角度取水平向右为 0 度，逆时针为正方向
+        self.connections = [] #储存(角度，半径)数据对，角度取水平向右为 0 度，逆时针为正方向，用弧度表示
         self.position = point  # (x, y) 坐标
      
-    def add_connection(self, angle, radius):
-        self.connections.append((angle, radius))            
+    def __eq__(self, value):
+        if not isinstance(value, SunNode):
+            return NotImplemented
+        return self.position == value.position
 
-    def get_angle_iter(self):
+    def add_connection(self, angle, radius, neighbor):
+        self.connections.append((angle, radius, neighbor))            
+
+    def get_valid_angles(self):
         iter_range = np.arange(0, 2 * np.pi, ENV_CONFIG["angle_iter_step"])
+        # 用来获取无效的角度范围，最后取反就是有效的角度范围
         is_forbidden = np.zeros_like(iter_range, dtype=bool)
         boundary_high = ENV_CONFIG["angle_of_repulsion_high"]
         boundary_low = ENV_CONFIG["angle_of_repulsion_low"]
@@ -27,8 +34,10 @@ class SunNode:
             for edge in self.connections:
                 angle = edge[0]
 
+                start = None
+                end = None
                 # 大于斥力引入长度边界，不做处理
-                if edge[1] > ENV_CONFIG["radius_boundary_of_repulsion"]:
+                if edge[1] > ENV_CONFIG["radius_boundary_of_repulsion_high"]:
                     continue
                 
                 # 在斥力两级边界之间，做遍历范围限制
@@ -39,13 +48,13 @@ class SunNode:
                 elif edge[1] > 0 and edge[1] <= ENV_CONFIG["radius_boundary_of_repulsion_low"]:
                     start = angle - boundary_low
                     end = angle + boundary_low
-
-                if start < 0:
-                    is_forbidden |= (iter_range >= start + 2 * np.pi) | (iter_range < end)
-                elif end > 2 * np.pi:
-                    is_forbidden |= (iter_range >= start) | (iter_range < end - 2 * np.pi)
-                else:
-                    is_forbidden |= (iter_range < end) & (iter_range >= start)
+                if start is not None and end is not None:
+                    if start < 0:
+                        is_forbidden |= (iter_range >= start + 2 * np.pi) | (iter_range < end)
+                    elif end > 2 * np.pi:
+                        is_forbidden |= (iter_range >= start) | (iter_range < end - 2 * np.pi)
+                    else:
+                        is_forbidden |= (iter_range < end) & (iter_range >= start)
                 
             valid_iter_range = iter_range[~is_forbidden]
             return valid_iter_range
@@ -66,6 +75,8 @@ class PRMGenerator:
         self.edges = []
         self.collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
         self.cell_size = cell_size
+        self.ray_step = cell_size * 0.1
+        self.ray_forward = cell_size * 0.2
 
     def _is_valid_position(self, x, y):
         """检查位置是否有效（不在障碍物附近且在边界内）"""
@@ -195,6 +206,7 @@ class PRMGenerator:
                 return False
         return True
     
+    # 阳光算法的初始点获取策略
     def _generate_strategic_seeds(self):
         seeds = []
         # 沿每个边界取若干点作为初始点
@@ -209,30 +221,131 @@ class PRMGenerator:
             for point in boundary:
                 if self._is_valid_position(point[0], point[1]):
                     seeds.append(SunNode(point))
-
         return seeds
     
+    def cast_ray(self, position, angle):
+        x, y = position
+        dx = math.cos(angle)
+        dy = - math.sin(angle) # 注意坐标系不是标准平面坐标系，纵轴是反过来的
+        current_length = 0
+        max_length = min(self.grid_width, self.grid_height) * ENV_CONFIG['cell_size'] * 0.8
+        
+        while current_length < max_length:
+            current_length += self.ray_step
+            x += dx * self.ray_step
+            y += dy * self.ray_step
+            if not self._is_valid_position(x, y):
+                return max(0, current_length - self.ray_step)
+        
+        return max_length
+
+    def generate_tangent_point(self, node: SunNode, angle, ray_length, open_list):
+        """生成切线射线"""
+        x, y = node.position
+        dx = math.cos(angle)
+        dy = - math.sin(angle)
+        tangent_x = x + dx * (ray_length + self.ray_forward)
+        tangent_y = y + dy * (ray_length + self.ray_forward)
+        # print("original node position: ", node.position,"angle: ", angle,"tangent node position: ", (tangent_x, tangent_y))
+        if self._is_valid_position(tangent_x, tangent_y):
+
+            tangent_node = SunNode((tangent_x, tangent_y))
+            # 在节点间建立双向联系
+            node.add_connection(angle, ray_length, tangent_node)
+            related_angle = (angle + np.pi) if (angle + np.pi) < 2 * np.pi else (angle - np.pi)
+            tangent_node.add_connection(related_angle, ray_length, node)
+
+            for other_node in open_list:
+                if self._is_valid_edge(tangent_node.position, other_node.position):
+                    to_other_angle = math.atan2(tangent_node.position[1] - other_node.position[1], other_node.position[0] - tangent_node.position[0]) # 同理，纵坐标是负值，因为坐标系是反的
+                    to_tangent_angle = math.atan2(other_node.position[1] - tangent_node.position[1], tangent_node.position[0] - other_node.position[0])
+                    ray_length = np.linalg.norm(np.array(tangent_node.position) - np.array(other_node.position))
+                    tangent_node.add_connection(to_other_angle, ray_length, other_node)
+                    other_node.add_connection(to_tangent_angle, ray_length, tangent_node)
+            open_list.append(tangent_node)
+        return
+
+
     def generate_sun_ray_graph(self):
         # 从边界选一些点作为起始点
         seed_points = self._generate_strategic_seeds()
-        open_list = seed_points
-        closed_list = []
-        while open_list:
-            current_node: SunNode = open_list.pop(0)
+        open_list = deque(seed_points)
+        closed_list = deque()
+        num_try = 0
+
+        while open_list and num_try < self.num_nodes:
+            num_try += 1
+            if num_try % 10 == 0:
+                print(f"探索次数: {num_try}/{self.num_nodes}")
+            current_node: SunNode = open_list.popleft()
+
+            # 计算当前节点的角度迭代范围
+            valid_angles = current_node.get_valid_angles()
+            ray_queue = deque() # 记录射线长度
+            first_ray_len = -1
+            second_ray_len = -1
+            angle_iter = np.arange(0, 2 * np.pi, ENV_CONFIG['angle_iter_step'])
+            invalid_angle = np.zeros_like(angle_iter) # 用来记录已经选择进行节点拓展的光线角度，防止重复拓展
+
+            for i, angle in enumerate(angle_iter):
+                ray_length = self.cast_ray(current_node.position, angle) # 根据太阳位置和角度发射射线并计算长度
+                # 通过判断前后两次光线长度的变化量的比率来判断是否需要生成切线点
+                if not ray_queue:
+                    ray_queue.append(ray_length)
+                    first_ray_len = ray_length
+                    continue
+                elif len(ray_queue) == 1:
+                    ray_queue.append(ray_length)
+                    second_ray_len = ray_length
+                    continue
+                
+                # 此时已经有至少两条光线
+                elif len(ray_queue) == 2:
+                    # 通过比较相邻三条光线两两之间的长度差来判断是否为边界
+                    pre_delta = ray_queue[1] - ray_queue[0]
+                    pre_sec_lenth = ray_queue.popleft()
+                    ray_queue.append(ray_length)
+                    delta = ray_queue[1] - ray_queue[0]
+                    rate = max(abs(delta), 0.05 * self.cell_size) / max(abs(pre_delta), 0.05 * self.cell_size)
+
+                    if rate >= 5 and (angle in valid_angles):
+                        if delta > 0:
+                            self.generate_tangent_point(current_node, angle, ray_queue[0], open_list) # 当前光线突变，以前一条光线长度为基础，长短短
+                            invalid_angle[i] = 1
+                        elif delta < 0 and invalid_angle[i - 1] == 0:
+                            self.generate_tangent_point(current_node, angle_iter[i - 1], ray_length, open_list) # 前一条光线突变，以当前光线长度为基础拓展前一条光线，短长长
+                            invalid_angle[i - 1] = 1
+                    elif rate <= 0.2 and (angle_iter[i - 2] in valid_angles):
+                        if pre_delta > 0 and invalid_angle[i - 1] == 0:
+                            self.generate_tangent_point(current_node, angle_iter[i - 1], pre_sec_lenth, open_list) # 从前一条光线开始突变，以前面第二条光线长度为基础拓展前一条光线，长长短
+                            invalid_angle[i - 1] = 1
+                        elif pre_delta < 0 and invalid_angle[i - 2] == 0:
+                            self.generate_tangent_point(current_node, angle_iter[i - 2], ray_queue[0], open_list) # 前面第二条光线是突变光线，以前一条光线长度为基础拓展前面第二条光线，短短长
+                            invalid_angle[i - 2] = 1
+                    
+                    elif invalid_angle[i - 1] == 0 and delta < 0 and pre_delta > 0 and abs(delta) > self.cell_size and pre_delta > self.cell_size:
+                        # 第三种情况，短长短，这种情况应该比较少见但是不能忽略
+                        self.generate_tangent_point(current_node, angle_iter[i - 1], max(ray_length, pre_sec_lenth), open_list)
+                        invalid_angle[i - 1] = 1
+                    
             closed_list.append(current_node)
+        self.nodes = []
+        self.edges = []
+        for node in (open_list + closed_list):
+            self.nodes.append(node.position)
+            for connection in node.connections:
+                angle, radius, neighbor = connection
+                self.edges.append((node.position, neighbor.position))
 
-            # 计算当前节点的角度迭代器
-            angle_iter = current_node.get_angle_iter()
-            
-            
 
-    def generate_prm(self, node_generate_mode):
+    def generate_prm(self, node_generate_mode="sampling"):
         """生成概率路图"""
         if node_generate_mode == "sampling":
             self.generate_nodes()
             self.connect_edges()
         elif node_generate_mode == "sun_ray":
             self.generate_sun_ray_graph()
+            # print(self.nodes, self.edges)
         return self.nodes, self.edges
 
 
