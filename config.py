@@ -24,7 +24,7 @@ ENV_CONFIG = {
     "radius_boundary_of_repulsion_high": 3, # 引入排斥的半径边界(栅格距离)
     "radius_boundary_of_repulsion_low": 1,
     "angle_of_repulsion_high": np.pi / 12, # 排斥的角度范围，即以已有的需要避让的边界为中心，向两侧各延伸的角度，设置为 15 度
-    "angle_of_repulsion_low": np.pi / 3,
+    "angle_of_repulsion_low": np.pi / 4,
     "angle_of_repulsion_default": np.pi / 20, # 默认的排斥角度范围
     "angle_iter_step": np.pi / 60 # 角度迭代步长，默认每 3 度发一条射线
 }

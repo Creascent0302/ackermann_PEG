@@ -81,8 +81,10 @@ class PRMGenerator:
         self.edges = []
         self.collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
         self.cell_size = cell_size
-        self.ray_step = cell_size * 0.1
-        self.ray_forward = cell_size * 1.2
+        self.ray_step = cell_size * 0.1 # 光线发射时前进的步长
+        self.ray_forward = cell_size * 1.2 # tangent 节点前进的固定步长
+        self.tangent_limit = cell_size # tangent 节点采用固定步长拓展的最小光线长度
+        self.ray_forward_low = cell_size * 0.8 # tangent 节点前进的比率
 
     def _is_valid_position(self, x, y):
         """检查位置是否有效（不在障碍物附近且在边界内）"""
@@ -252,9 +254,15 @@ class PRMGenerator:
         x, y = node.position
         dx = math.cos(angle)
         dy = - math.sin(angle)
-        tangent_x = x + dx * (ray_length + self.ray_forward)
-        tangent_y = y + dy * (ray_length + self.ray_forward)
-        
+
+        # 根据光线长度决定切线点的前进距离，但其实感觉没啥效果
+        if ray_length < self.tangent_limit:
+            tangent_x = x + dx * (ray_length + self.ray_forward_low)
+            tangent_y = y + dy * (ray_length + self.ray_forward_low)
+        else:
+            tangent_x = x + dx * (ray_length + self.ray_forward)
+            tangent_y = y + dy * (ray_length + self.ray_forward)
+
         if self._is_valid_position(tangent_x, tangent_y):
 
             tangent_node = SunNode((tangent_x, tangent_y))
