@@ -4,25 +4,26 @@ from scipy.spatial import KDTree
 import sys
 sys.path.append('.')
 from config import ENV_CONFIG
+import math
 
 class PRMGenerator:
-    """概率路图生成器，支持守卫节点和连接器节点"""
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=100, connection_radius=1.0):
+    """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=100, connection_radius=0.8):
         self.grid_width = grid_width
         self.grid_height = grid_height
-        self.obstacles = obstacles  # 障碍物为整数坐标
-        self.num_nodes = num_nodes
+        self.obstacles = obstacles
+        self.num_nodes = num_nodes 
         self.connection_radius = connection_radius
-        self.min_connection_radius = 0.2
-        self.guards = []  # 守卫节点
-        self.connectors = []  # 连接器节点
+        self.min_connection_radius = 0.24
+        self.nodes = []          # 统一节点列表
         self.edges = []
         self.collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
 
     def _is_valid_position(self, x, y):
         """检查位置是否有效（不在障碍物附近且在边界内）"""
 
-        dr = self.collision_radius
+        #dr = self.collision_radius
+        dr = 0.015
         check_list = [(x+dr,y),(x+dr/np.sqrt(2),y+dr/np.sqrt(2)),
                       (x+dr/np.sqrt(2),y-dr/np.sqrt(2)),(x-dr,y),
                         (x-dr/np.sqrt(2),y+dr/np.sqrt(2)),(x-dr/np.sqrt(2),y-dr/np.sqrt(2)),
@@ -38,133 +39,194 @@ class PRMGenerator:
                     return False
         return True
 
-
-    def _is_valid_edge(self, start, end):
-        """检查边缘是否有效（不与障碍物相交）"""
-        # 使用Bresenham算法检查路径上的每个点
-        x0, y0 = start
-        x1, y1 = end
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-
-        while True:
-            if (int(x0), int(y0)) in self.obstacles:
-                return False
-            if x0 == x1 and y0 == y1:
-                break
-            err2 = err * 2
-            if err2 > -dy:
-                err -= dy
-                x0 += sx
-            if err2 < dx:
-                err += dx
-                y0 += sy
-        return True
-
-    def haltonian_sampling(self):
-        """使用Halton序列生成随机位置（浮点数，保留两位小数）"""
-        from scipy.stats import qmc
-        sampler = qmc.Halton(d=2, scramble=True)
-        sample = sampler.random(1)[0]
-        x = round(sample[0] * self.grid_width * ENV_CONFIG['cell_size'], 2)
-        y = round(sample[1] * self.grid_height * ENV_CONFIG['cell_size'], 2)
-        return (x, y)
-
     def check_near_radius(self, position):
-        """检查位置是否在连接器节点附近"""
-        if position[0] == None:
+        """
+        若与现有任一节点距离小于最小连接半径则判定为过近，返回 True（表示应放弃该采样）。
+        返回 False 表示距离足够可以继续后续验证。
+        """
+        if position[0] is None:
             return True
-        for node in self.connectors:
-            if np.linalg.norm(np.array(position) - np.array(node)) < self.min_connection_radius:
-                return True
-        for node in self.guards:
-            if np.linalg.norm(np.array(position) - np.array(node)) < self.min_connection_radius:
+        px, py = position
+        pos_vec = np.array([px, py])
+        for n in self.nodes:
+            if np.linalg.norm(pos_vec - np.array(n)) < self.min_connection_radius:
                 return True
         return False
-    def bridge_sampling(self):
-        """使用桥接采样生成位置（整数坐标）"""
-        x1 = np.random.randint(0, self.grid_width * ENV_CONFIG['cell_size'])
-        y1 = np.random.randint(0, self.grid_height * ENV_CONFIG['cell_size'])
-        x2 = np.random.randint(0, self.grid_width * ENV_CONFIG['cell_size'])
-        y2 = np.random.randint(0, self.grid_height * ENV_CONFIG['cell_size'])
-        if self._is_valid_position(x1, y1)== False and self._is_valid_position(x2, y2)==False:
-            return ((x1+x2)/2, (y1+y2)/2)
-        else:
-            return (None, None)
 
-    def random_sampling(self):  
-        """随机采样生成位置（整数坐标）"""
+    def beam_sampling(self, explore_node):
+        """
+        从 explore_node 全向发射光束：
+        - 计算每 3° 光束最大可行距离
+        - 遍历相邻光束对，若差值 > min(short/5,1) 视为临界
+        - 为每个临界对生成两个候选节点：
+            1) 长光束方向距离 (short+long)/2
+            2) 短光束方向距离 short/2（short>0 时）
+        返回所有新候选节点列表（可能为空，已去重）
+        """
+        ex, ey = explore_node
+        max_range = math.hypot(self.grid_width * ENV_CONFIG['cell_size'],
+                               self.grid_height * ENV_CONFIG['cell_size'])
+        step = 0.08
+        angles = np.arange(0, 360, 2)
+        distances = []
+        for ang in angles:
+            theta = math.radians(ang)
+            dx, dy = math.cos(theta), math.sin(theta)
+            t = 0.0
+            last_valid = 0.0
+            while t <= max_range:
+                px = ex + t * dx
+                py = ey + t * dy
+                if not self._is_valid_position(px, py):
+                    break
+                last_valid = t
+                t += step
+            distances.append(last_valid)
 
-        x = np.random.randint(0, self.grid_width* ENV_CONFIG['cell_size'])
-        y = np.random.randint(0, self.grid_height* ENV_CONFIG['cell_size'])
-        return (x, y)
+        new_nodes = []
+        seen = set()
+        n = len(distances)
+        for i in range(n):
+            j = (i + 1) % n
+            d1, d2 = distances[i], distances[j]
+            short, long = (d1, d2) if d1 <= d2 else (d2, d1)
+            if long <= 0:
+                continue
+            threshold = min(short / 5.0, 0.2)
+            if long - short > threshold:
+                # 长光束候选
+                long_idx = i if distances[i] == long else j
+                theta_long = math.radians(angles[long_idx])
+                sample_dist_long = (short + long) / 2.0
+                sx_long = ex + sample_dist_long * math.cos(theta_long)
+                sy_long = ey + sample_dist_long * math.sin(theta_long)
+                key_long = (round(sx_long, 2), round(sy_long, 2))
+                if key_long not in seen:
+                    seen.add(key_long)
+                    new_nodes.append(key_long)
+                # 短光束候选（短方向一半位置）
+                if short > 0:
+                    short_idx = i if distances[i] == short else j
+                    theta_short = math.radians(angles[short_idx])
+                    sample_dist_short = short / 2.0
+                    sx_short = ex + sample_dist_short * math.cos(theta_short)
+                    sy_short = ey + sample_dist_short * math.sin(theta_short)
+                    key_short = (round(sx_short, 2), round(sy_short, 2))
+                    if key_short not in seen:
+                        seen.add(key_short)
+                        new_nodes.append(key_short)
+        return new_nodes  # 可能为空列表
 
     def generate_nodes(self):
-        """生成守卫节点和连接器节点"""
-        self.guards = []
-        self.connectors = []
-        current_number = 0
-        # 生成节点
-        attempt_count = 0
-        while current_number < self.num_nodes:
-            if current_number % 10 == 0:
-                print(f"生成节点: {current_number}/{self.num_nodes}")
-            if attempt_count < self.num_nodes / 3:
-                x, y = self.haltonian_sampling()  # 使用Halton序列生成位置 
-            elif attempt_count < 1.22 * self.num_nodes :
-                x, y = self.bridge_sampling()  # 使用桥接采样生成位置
-            else:
-                x, y = self.random_sampling()  # 使用随机采样生成位置
+        """
+        批量光束采样 + 探索队列：
+        - 使用 frontier 维护待探索节点列表（FIFO）
+        - 每次从 frontier 取出一个节点做一次全向光束采样
+        - 新节点通过筛选后加入 self.nodes 与 frontier，并立即尝试建立边
+        """
+        self.nodes, self.edges = [], []
+        # 1. 初始化起点
+        while True:
+            start_x = np.random.uniform(0, self.grid_width * ENV_CONFIG['cell_size'])
+            start_y = np.random.uniform(0, self.grid_height * ENV_CONFIG['cell_size'])
+            if self._is_valid_position(start_x, start_y):
+                start_node = (start_x, start_y)
+                self.nodes.append(start_node)
+                break
+        frontier = [start_node]
 
-            if self.check_near_radius((x, y)):
-                continue
-            if self._is_valid_position(x, y):
-                # 检查是否满足守卫节点条件
-                guard_count = sum((self._is_valid_edge((x, y), guard) \
-                                   and 0.8*self.connection_radius >= np.linalg.norm(np.array((x, y)) - np.array(guard)) \
-                                    for guard in self.guards))
-                if guard_count == 0:
-                    self.guards.append((x, y))
-                    current_number += 1
-                    attempt_count = 0  # 重置尝试计数
-                elif guard_count >= 2:  # 如果已有两个守卫节点连接到此位置，则认为是连接器节点
-                    # 检查是否满足连接器节点条件
-                    self.connectors.append((x, y))
-                    current_number += 1
-                    attempt_count = 0  # 重置尝试计数
-            attempt_count += 1
-            if attempt_count > self.num_nodes*1.5:  # 避免无限循环
-                print("尝试次数过多，停止生成")
+        # 2. 探索循环
+        max_idle_expansions = self.num_nodes * 3  # 没有新增节点的探索上限
+        idle_expansions = 0
+
+        while len(self.nodes) < self.num_nodes and frontier and idle_expansions < max_idle_expansions:
+            explore_node = self.select_explore_node(frontier)
+            if explore_node is None:
                 break
-            if current_number >= self.num_nodes:
-                break
+            print(f"探索节点 {explore_node} | 当前已生成 {len(self.nodes)}/{self.num_nodes}")
+            candidates = self.beam_sampling(explore_node)
+
+            added_this_round = 0
+            for candidate in candidates:
+                if len(self.nodes) >= self.num_nodes:
+                    break
+                if self.check_near_radius(candidate):
+                    continue
+                if not self._is_valid_position(*candidate):
+                    continue
+
+                # 添加节点
+                self.nodes.append(candidate)
+                frontier.append(candidate)  # 加入待探索
+                added_this_round += 1
+
+                # 建立边
+                for other in self.nodes[:-1]:
+                    dist = np.linalg.norm(np.array(candidate) - np.array(other))
+                    if dist <= self.connection_radius\
+                            and dist > self.min_connection_radius\
+                            and self._is_valid_edge(candidate, other):
+                        if (candidate, other) not in self.edges and (other, candidate) not in self.edges:
+                            self.edges.append((candidate, other))
+
+            if added_this_round == 0:
+                idle_expansions += 1
+            else:
+                idle_expansions = 0  # 有新增则重置
+
+        if len(self.nodes) < self.num_nodes and not frontier:
+            print("frontier 为空，无法继续扩展。")
+        if idle_expansions >= max_idle_expansions:
+            print("多次探索无新增节点，提前终止。")
+
+    def _compute_degrees(self):
+        """计算当前图中各节点度数"""
+        deg = {n: 0 for n in self.nodes}
+        for a, b in self.edges:
+            if a in deg: deg[a] += 1
+            if b in deg: deg[b] += 1
+        return deg
+
+    def select_explore_node(self, frontier):
+        """
+        从 frontier 中选择下一个待探索节点：
+        优先度数（连接数）较少的节点；若度数相同随机打破平局。
+        """
+        if not frontier:
+            return None
+        deg = self._compute_degrees()
+        # 通过添加随机扰动做次级排序，避免总是选择同一节点
+        #chosen = min(frontier, key=lambda n: (deg.get(n, 0), np.random.random()))
+        chosen = min(frontier, key=lambda n: (deg.get(n, 0)))
+        frontier.remove(chosen)
+        return chosen
 
     def connect_edges(self):
-        """连接守卫节点和连接器节点"""
+        """可选：重建所有边"""
         self.edges = []
-        all_nodes = self.guards + self.connectors
+        for i, a in enumerate(self.nodes):
+            for j, b in enumerate(self.nodes):
+                if i >= j:
+                    continue
+                dist = np.linalg.norm(np.array(a) - np.array(b))
+                if dist <= self.connection_radius * 0.8 \
+                and self._is_valid_edge(a, b):
+                        #and dist > self.min_connection_radius * 1.2 \
+                        
+                    self.edges.append((a, b))
 
-        if not all_nodes:
-            raise ValueError("请先生成节点！")
-        
-        # 使用简单的距离计算查找邻居
-        for i, node in enumerate(all_nodes):
-            for j, neighbor in enumerate(all_nodes):
-                if i != j:  # 排除自身
-                    distance = np.linalg.norm(np.array(node) - np.array(neighbor))
-                    if distance <= self.connection_radius*0.8 \
-                        and self._is_valid_edge(node, neighbor)\
-                            and distance > self.min_connection_radius*1.2:
-                        self.edges.append((node, neighbor))
+    def generate_prm(self):
+        self.generate_nodes()
+        return self.nodes, self.edges
 
     def _is_valid_edge(self, node1, node2):
-        """检查边是否有效（不穿过障碍物）"""
+        """
+        检查两节点间连线是否可行：对线段做等距采样，若任一点无效则整条边不可用。
+        """
         x1, y1 = node1
         x2, y2 = node2
-        num_points = max(1, int(np.linalg.norm([x2 - x1, y2 - y1]) * 10))  # 插值点数
+        length = math.hypot(x2 - x1, y2 - y1)
+        num_points = max(1, int(length * 20))  # 采样密度：每单位长度约10点
         for i in range(num_points + 1):
             t = i / num_points
             x = x1 + t * (x2 - x1)
@@ -172,13 +234,6 @@ class PRMGenerator:
             if not self._is_valid_position(x, y):
                 return False
         return True
-
-    def generate_prm(self):
-        """生成概率路图"""
-        self.generate_nodes()
-        self.connect_edges()
-        self.nodes = self.guards + self.connectors
-        return self.nodes, self.edges
 
 
 class PRMRenderer:
@@ -248,7 +303,7 @@ if __name__ == "__main__":
         x = np.random.randint(0, grid_width)
         y = np.random.randint(0, grid_height)
         obstacles.append((x, y))
-    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, num_nodes=200, connection_radius=0.8)
+    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, num_nodes=300, connection_radius=0.8)
     nodes, edges = prm_generator.generate_prm()
     print(len(nodes), "nodes generated")
     print(len(edges), "edges generated")
