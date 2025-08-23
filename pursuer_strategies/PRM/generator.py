@@ -322,6 +322,9 @@ class PRMGenerator:
             candidate = (x, y)
             if not self._is_valid_position(*candidate):
                 continue
+            # === 新增: 十字方向包围裁剪 ===
+            if self._is_cardinal_enclosed(x, y):
+                continue
             if self.check_near_radius(candidate):
                 continue
             # 加入节点
@@ -363,6 +366,9 @@ class PRMGenerator:
                 if self.check_near_radius(candidate):
                     continue
                 if not self._is_valid_position(*candidate):
+                    continue
+                # === 新增: 十字方向包围裁剪 ===
+                if self._is_cardinal_enclosed(candidate[0], candidate[1]):
                     continue
                 self.nodes.append(candidate)
                 self.node_clearance[candidate] = self._compute_clearance(candidate)
@@ -767,6 +773,38 @@ class PRMGenerator:
         self.nodes = [n for n in self.nodes if n in keep]
         self.edges = [ (a, b) for (a, b) in self.edges if a in keep and b in keep ]
         self.node_clearance = {n: self.node_clearance[n] for n in keep if n in self.node_clearance}
+
+    def _is_cardinal_enclosed(self, x, y):
+        """
+        十字方向包围判定:
+          取四个偏移点 (±0.5*cs,0),(0,±0.5*cs)
+          统计落入障碍/越界的方向个数 blocked
+          条件:
+             - blocked >= 3  -> 判定被包围
+             - blocked == 2 且这两个方向不是一对相反 -> 判定被包围
+          返回 True 表示该节点应被丢弃
+        """
+        cs = ENV_CONFIG['cell_size']
+        dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+        grid_w, grid_h = self.grid_width, self.grid_height
+        obs_set = set(self.obstacles)
+        blocked_dirs = []
+        for dx, dy in dirs:
+            px = x +  cs * dx
+            py = y +  cs * dy
+            gx = int(px / cs)
+            gy = int(py / cs)
+            # 越界视为障碍
+            if gx < 0 or gx >= grid_w or gy < 0 or gy >= grid_h or (gx, gy) in obs_set:
+                blocked_dirs.append((dx, dy))
+        if len(blocked_dirs) >= 3:
+            return True
+        if len(blocked_dirs) == 2:
+            d1, d2 = blocked_dirs
+            # 相反: dx1 == -dx2 且 dy1 == -dy2
+            if not (d1[0] == -d2[0] and d1[1] == -d2[1]):
+                return True
+        return False
 
 class PRMRenderer:
     """使用Pygame渲染PRM"""
