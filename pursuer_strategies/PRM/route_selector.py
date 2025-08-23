@@ -1,11 +1,30 @@
 import sys, pygame, numpy as np
-sys.path.append('.')
+sys.path.append('./pursuer_strategies/PRM')
+print("当前 sys.path:", sys.path)
+from generator import PRMGenerator
 from config import ENV_CONFIG
 import heapq
 # ===== 新增 控制相关导入 =====
 from utils.pure_pursuit import pure_pursuit_control
 from utils.dwa import dwa_control
+import time
+from scipy.spatial import KDTree
+import functools
 
+MEDIAL_PRM = {
+    'nodes': [],
+    'edges': []
+}
+PRM = {
+    'nodes': [],
+    'edges': []
+}
+TIME = 0
+
+# 全局缓存
+_POINT_VALID_CACHE = {}  # (x,y) -> bool
+_EDGE_VALID_CACHE = {}   # ((x1,y1), (x2,y2)) -> bool
+_NEAREST_CACHE = {}      # (point, nodes_hash) -> nearest_valid_node
 
 def _dijkstra(start, adj):
     dist = {start: 0.0}
@@ -21,9 +40,134 @@ def _dijkstra(start, adj):
                 heapq.heappush(h, (nd, v))
     return dist
 
-def _nearest_medial(point, medial_nodes):
-    return min(medial_nodes, key=lambda n: np.linalg.norm(np.array(point) - np.array(n)))
+def _is_valid_point(point, obstacles, collision_radius=None):
+    """加速版: 带缓存的点有效性检查"""
+    # 使用缓存避免重复计算
+    cache_key = (point[0], point[1], collision_radius)
+    if cache_key in _POINT_VALID_CACHE:
+        return _POINT_VALID_CACHE[cache_key]
+    
+    # 快速粗检查 - 点本身是否在障碍物中
+    x, y = point
+    grid_cell_x, grid_cell_y = int(x / ENV_CONFIG['cell_size']), int(y / ENV_CONFIG['cell_size'])
+    grid_height = ENV_CONFIG['gridnum_height']
+    grid_width = ENV_CONFIG['gridnum_width']
+    
+    # 边界检查
+    if grid_cell_x < 0 or grid_cell_x >= grid_width or grid_cell_y < 0 or grid_cell_y >= grid_height:
+        _POINT_VALID_CACHE[cache_key] = False
+        return False
+    
+    # 障碍物检查 - 如果点本身在障碍物内，快速返回
+    if (grid_cell_x, grid_cell_y) in obstacles:
+        _POINT_VALID_CACHE[cache_key] = False
+        return False
+    
+    # 细检查 - 周围点
+    if collision_radius is None:
+        collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
+    dr = collision_radius
+    
+    # 更高效的周围采样 - 仅检查8个方向而不是64个点
+    check_list = [
+        (x+dr, y), (x+dr/np.sqrt(2), y+dr/np.sqrt(2)),
+        (x, y+dr), (x-dr/np.sqrt(2), y+dr/np.sqrt(2)),
+        (x-dr, y), (x-dr/np.sqrt(2), y-dr/np.sqrt(2)),
+        (x, y-dr), (x+dr/np.sqrt(2), y-dr/np.sqrt(2))
+    ]
+    
+    for px, py in check_list:
+        gx1, gy1 = px / ENV_CONFIG['cell_size'], py / ENV_CONFIG['cell_size']
+        if gx1 < 0 or gx1 >= grid_width or gy1 < 0 or gy1 >= grid_height:
+            _POINT_VALID_CACHE[cache_key] = False
+            return False
+        if (int(gx1), int(gy1)) in obstacles:
+            _POINT_VALID_CACHE[cache_key] = False
+            return False
+    
+    _POINT_VALID_CACHE[cache_key] = True
+    return True
 
+def _is_valid_edge(a, b, obstacles):
+    """加速版: 自适应采样 + 缓存的边有效性检查"""
+    # 标准化点顺序，确保缓存键唯一
+    edge_key = (tuple(a), tuple(b)) if tuple(a) <= tuple(b) else (tuple(b), tuple(a))
+    
+    if edge_key in _EDGE_VALID_CACHE:
+        return _EDGE_VALID_CACHE[edge_key]
+    
+    # 自适应采样 - 长边需要更多采样点，短边更少
+    dist = np.linalg.norm(np.array(a) - np.array(b))
+    cell_size = ENV_CONFIG['cell_size']
+    num_checks = max(1, min(30, int(dist / (cell_size * 0.5)))) # 自适应密度
+    
+    # 渐进式采样 - 先检查少量点，仅在通过时增加采样
+    for density in [3, num_checks]:  # 先快速检查，再详细检查
+        if density <= 0:
+            continue
+            
+        step = 1.0 / density
+        for i in range(density + 1):
+            t = i * step
+            x = int(a[0] * (1 - t) + b[0] * t)
+            y = int(a[1] * (1 - t) + b[1] * t)
+            if not _is_valid_point((x, y), obstacles):
+                _EDGE_VALID_CACHE[edge_key] = False
+                return False
+    
+    _EDGE_VALID_CACHE[edge_key] = True
+    return True
+
+# KDTree 加速的最近点查找
+def _nearest_medial(point, medial_nodes, obstacles, allow_blocked_fallback=True):
+    """大幅加速版: KDTree + 缓存 + 排序剪枝"""
+    if not medial_nodes:
+        return None
+    
+    # 构建 KDTree 或使用缓存的
+    nodes_hash = hash(frozenset(medial_nodes))
+    cache_key = (point[0], point[1], nodes_hash)
+    
+    if cache_key in _NEAREST_CACHE:
+        return _NEAREST_CACHE[cache_key]
+    
+    # 使用 KDTree 快速找到 K 个最近点
+    nodes_array = np.array(list(medial_nodes))
+    if len(nodes_array) > 10:  # 仅对大规模点集使用KDTree
+        tree = KDTree(nodes_array)
+        # 查询 K 个最近点，避免排序整个集合
+        k = min(10, len(nodes_array))
+        distances, indices = tree.query(np.array(point), k=k)
+        nearest_candidates = [tuple(nodes_array[i]) for i in indices]
+    else:
+        # 小规模点集直接排序
+        nearest_candidates = sorted(medial_nodes, 
+                              key=lambda n: np.linalg.norm(np.array(point) - np.array(n)))[:10]
+    
+    # 检查可视性
+    for cand in nearest_candidates:
+        if _is_valid_edge(cand, (point[0], point[1]), obstacles):
+            _NEAREST_CACHE[cache_key] = cand
+            return cand
+    
+    # 全部不可见时回退
+    if allow_blocked_fallback and nearest_candidates:
+        result = nearest_candidates[0]
+        _NEAREST_CACHE[cache_key] = result
+        return result
+    
+    return None
+
+# 周期性清除缓存，防止内存泄漏
+def clear_validation_caches():
+    """清除验证缓存"""
+    global _POINT_VALID_CACHE, _EDGE_VALID_CACHE, _NEAREST_CACHE
+    if len(_POINT_VALID_CACHE) > 10000:
+        _POINT_VALID_CACHE = {}
+    if len(_EDGE_VALID_CACHE) > 5000:
+        _EDGE_VALID_CACHE = {}
+    if len(_NEAREST_CACHE) > 1000:
+        _NEAREST_CACHE = {}
 
 # ===== 调整: 仅在中轴子图上构建邻接 =====
 def _build_medial_adj_all(all_nodes, medial_edges):
@@ -38,10 +182,10 @@ def _build_medial_adj_all(all_nodes, medial_edges):
 # ===== 组合优化版本目标选择 =====
 def select_medial_targets(pursuers_states,
                           evader_state,
-                          medial_axis_nodes,
                           medial_axis_all_nodes,
                           medial_axis_edges,
                           neighbor_radius,
+                          obstacles,
                           max_candidates_per_pursuer=6):
     """
     全投影 + 组合优化 (扩展规则):
@@ -54,7 +198,8 @@ def select_medial_targets(pursuers_states,
     all_nodes_set = set(medial_axis_all_nodes)
     adj = _build_medial_adj_all(list(all_nodes_set), medial_axis_edges)
     ev_pt = (evader_state[0], evader_state[1])
-    e_proj = _nearest_medial(ev_pt, all_nodes_set)
+
+    e_proj = _nearest_medial(ev_pt, all_nodes_set, obstacles)
     dist_evader = _dijkstra(e_proj, adj)
 
     dist_cache = {}
@@ -69,7 +214,7 @@ def select_medial_targets(pursuers_states,
     fixed_evader_idx = set()
     for idx, p in enumerate(pursuers_states):
         p_pos = (p[0], p[1])
-        p_proj = _nearest_medial(p_pos, all_nodes_set)
+        p_proj = _nearest_medial(p_pos, all_nodes_set,obstacles)
         pursuer_proj_nodes.append(p_proj)
         dist_p = get_dist(p_proj)
         pursuer_proj_dist.append(dist_p)
@@ -78,7 +223,7 @@ def select_medial_targets(pursuers_states,
             fixed_evader_idx.add(idx)
             continue
         # 新增条件: 原始欧氏距离 < 1.5
-        if np.linalg.norm(np.array(p_pos) - np.array(ev_pt)) < 1.5:
+        if np.linalg.norm(np.array(p_pos) - np.array(ev_pt)) < 1.0:
             fixed_evader_idx.add(idx)
 
     # 若全部追捕者都固定为逃逸者目标
@@ -337,51 +482,166 @@ def _shortest_path_on_medial(adj, start, goal):
     path.reverse()
     return path
 
+def _angle_between_vectors(v1, v2):
+    """计算两个向量之间的夹角（弧度制）"""
+    dot = v1[0] * v2[0] + v1[1] * v2[1]
+    mag1 = np.sqrt(v1[0]**2 + v1[1]**2)
+    mag2 = np.sqrt(v2[0]**2 + v2[1]**2)
+    
+    # 防止除零错误
+    if mag1 * mag2 < 1e-10:
+        return 0.0
+        
+    cos_angle = dot / (mag1 * mag2)
+    # 数值精度问题可能导致cos_angle略大于1
+    cos_angle = min(1.0, max(-1.0, cos_angle))
+    return np.arccos(cos_angle)
+
+def _shortest_path_with_heading_constraint(adj, start, goal, agent_heading):
+    """
+    计算满足朝向约束的最短路径:
+    - 先求标准最短路径
+    - 若第一段与当前朝向夹角 <= max_angle (默认 120°) 则直接使用
+    - 否则尝试替换第一段: 在所有满足角度约束的邻居中，拼接最短剩余路径并选总代价最小
+    - 如果仍无可行改进，返回原标准路径
+    返回: 路径(list[node])，保证非 None
+    """
+    if start not in adj or goal not in adj:
+        return []
+    if start == goal:
+        return [start]
+
+    # 角度阈值 (弧度)
+    max_angle = 2 * np.pi / 3  # 120°
+
+    # 标准最短路径
+    standard_path = _shortest_path_on_medial(adj, start, goal)
+    if len(standard_path) < 2:
+        return standard_path
+
+    # 计算第一段方向与当前朝向的夹角
+    dx = standard_path[1][0] - standard_path[0][0]
+    dy = standard_path[1][1] - standard_path[0][1]
+    seg_vec = (dx, dy)
+    seg_bearing = np.arctan2(dy, dx)               # 段方位
+    # 与 agent_heading 的最小绝对差（规约到 [-pi,pi]）
+    heading_diff = (seg_bearing - agent_heading + np.pi) % (2 * np.pi) - np.pi
+    abs_heading_diff = abs(heading_diff)
+
+    # 若标准路径首段满足约束直接返回
+    if abs_heading_diff <= max_angle:
+        return standard_path
+
+    # 尝试所有满足角度约束的邻居作为第一步
+    best_path = None
+    best_cost = float('inf')
+    for neighbor, w in adj.get(start, []):
+        ndx = neighbor[0] - start[0]
+        ndy = neighbor[1] - start[1]
+        dir_vec = (ndx, ndy)
+        seg_bearing2 = np.arctan2(ndy, ndx)
+        diff2 = (seg_bearing2 - agent_heading + np.pi) % (2 * np.pi) - np.pi
+        if abs(diff2) > max_angle:
+            continue
+        rem_path = _shortest_path_on_medial(adj, neighbor, goal)
+        if not rem_path:
+            continue
+        candidate = [start] + rem_path
+        # 计算总代价
+        cost = 0.0
+        for a, b in zip(candidate[:-1], candidate[1:]):
+            cost += np.linalg.norm(np.array(a) - np.array(b))
+        if cost < best_cost:
+            best_cost = cost
+            best_path = candidate
+
+    # 若找到改进且满足约束的路径，返回；否则退回标准路径
+    return best_path if best_path is not None else None
+
+def prm_policy(observation):
+    global MEDIAL_PRM,TIME
+    pursuers = observation['pursuers_states']
+    evader = observation['evader_state']
+    obstacles = observation['obstacles']
+    grid_width = ENV_CONFIG['gridnum_width']
+    grid_height = ENV_CONFIG['gridnum_height']
+ 
+    if not MEDIAL_PRM['nodes']:
+        # 生成 PRM
+        prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=320, connection_radius=0.6)
+        (nodes,
+        edges,
+        medial_axis_nodes,
+        medial_axis_all_nodes,
+        medial_axis_edges,
+        medial_axis_paths) = prm_generator.generate_prm()
+        MEDIAL_PRM['nodes'] = medial_axis_all_nodes
+        MEDIAL_PRM['edges'] = medial_axis_edges
+        PRM['nodes'] = nodes
+        PRM['edges'] = edges
+
+    neighbor_radius = 1.8 # 可调
+    if time.time() - TIME > 0.3:
+        targets = select_medial_targets(pursuers, evader,
+                                            MEDIAL_PRM['nodes'],
+                                            MEDIAL_PRM['edges'],
+                                            neighbor_radius,
+                                            obstacles)
+    # 定期清理缓存
+    if time.time() - TIME > 5.0 and TIME != 0:  # 每5秒清理一次
+        clear_validation_caches()
+        TIME = time.time()
+
+    return prm_medial_policy(pursuers, evader, targets,
+                              PRM['nodes'], PRM['edges'],
+                              obstacles)
+
 def prm_medial_policy(pursuers_states,
                       evader_state,
                       targets,
                       medial_axis_all_nodes,
                       medial_axis_edges,
                       obstacles):
-    """
-    基于已选 targets 在中轴上生成路径与 (steering, speed):
-      - 起点: 追捕者投影节点
-      - 终点: 若 is_evader_target -> 逃逸者投影节点，否则目标节点
-      - 控制: 取路径第二个节点(或第一个)作为 pure pursuit 预瞄点
-    返回: actions, paths
-    """
+    """基于已选 targets 生成动作"""
     if not medial_axis_all_nodes or not medial_axis_edges:
         return [(0.0,0.0)]*len(pursuers_states), {}
     nodes_set = set(medial_axis_all_nodes)
     adj = _build_medial_adj_weighted(nodes_set, medial_axis_edges)
     ev_pt = (evader_state[0], evader_state[1])
-    e_proj = _nearest_medial(ev_pt, nodes_set)
+    e_proj = _nearest_medial(ev_pt, nodes_set, obstacles)
     actions = []
     paths = {}
+    
     for i, p in enumerate(pursuers_states):
         p_pos = (p[0], p[1])
-        p_proj = _nearest_medial(p_pos, nodes_set)
+        heading = p[2]  # 假设第三个元素是朝向角度
+        p_proj = _nearest_medial(p_pos, nodes_set, obstacles)
         tx, ty, _, _, is_evader = targets[i]
-        goal_node = e_proj if is_evader else _nearest_medial((tx,ty), nodes_set)
-        path = _shortest_path_on_medial(adj, p_proj, goal_node)
-        paths[i] = path
+        goal_node = e_proj if is_evader else _nearest_medial((tx,ty), nodes_set, obstacles)
+        
+        # 使用带朝向约束的路径规划
+        path = _shortest_path_with_heading_constraint(adj, p_proj, goal_node, heading)
+
+        if path is not None:
+            paths[i] = path
+        elif last_paths[i] is not None:
+            path = last_paths[i]
+            paths[i] = path
         # 预瞄点
         if path:
-            if len(path) > 1:
-                preview = path[1]
-            else:
-                preview = path[0]
+            preview = path[1] if len(path) > 1 else path[0]
         else:
             preview = (p_pos[0], p_pos[1])
-        # 调用控制（状态包含朝向的第三个值, 若缺省已在示例为 0.0）
+        last_paths = paths
         steering, speed = pure_pursuit_control(p, preview)
-        steering = dwa_control(p, (steering, speed), obstacles, preview)
+        steering, speed = dwa_control(p, (steering, speed), obstacles, preview)
         actions.append((steering, speed))
+        
     return actions, paths
 
 # ========== 演示 (修改: 计算并显示优势目标) ==========
 if __name__ == "__main__":
-    from generator import PRMGenerator
     import time 
     # 示例：三名追捕者 + 一个逃逸者
     grid_width = ENV_CONFIG['gridnum_width']
@@ -395,8 +655,6 @@ if __name__ == "__main__":
         y = np.random.randint(0, grid_height)
         obstacles.add((x, y))
     obstacles = list(obstacles)
-
-
 
     # 生成 PRM
     prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
@@ -425,10 +683,10 @@ if __name__ == "__main__":
 
         start_time = time.time()
         targets = select_medial_targets(pursuers, evader_state,
-                                        medial_axis_nodes,
                                         medial_axis_all_nodes,
                                         medial_axis_edges,
-                                        neighbor_radius)
+                                        neighbor_radius,
+                                        obstacles)
         end_time = time.time()
         print(f"Target selection took {end_time - start_time:.4f} seconds")
         # 新增: 规划动作
@@ -436,15 +694,15 @@ if __name__ == "__main__":
         actions, paths = prm_medial_policy(pursuers,
                                            evader_state,
                                            targets,
-                                           medial_axis_all_nodes,
-                                           medial_axis_edges,
+                                           nodes,
+                                           edges,
                                            obstacles)
         act_end = time.time()
         print("Actions:", actions, f"(planning {act_end - act_start:.4f}s)")
         # 可视化
         render_prm_and_agents(pursuers, evader_state, obstacles,
                               nodes, edges,
-                              medial_axis_nodes, medial_axis_edges,
+                              nodes, edges,
                               targets=targets,
                               paths=paths,          # 传入路径
                               window_scale=100)
