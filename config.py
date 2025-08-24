@@ -14,8 +14,8 @@ BICYCLE_MODEL_CONFIG = {
 }
 
 ENV_CONFIG = {
-    "gridnum_width": 30,  # Width of the environment in grid cells
-    "gridnum_height": 15,  # Height of the environment in grid cells
+    "gridnum_width": 50,  # Width of the environment in grid cells
+    "gridnum_height": 50,  # Height of the environment in grid cells
     "obstacle_probability": 0.2,  # Probability of each grid cell being an obstacle
     "cell_size": 0.2,  # Size of each grid cell in pixel
     "agent_collision_radius": 0.07,  # Collision radius for agents

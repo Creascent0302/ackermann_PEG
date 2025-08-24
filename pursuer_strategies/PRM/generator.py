@@ -6,7 +6,7 @@ sys.path.append('.')
 from config import ENV_CONFIG
 import math
 import heapq  # 新增: 最短路
-
+from map_generator import generate_indoor_obstacles, generate_maze_obstacles
 class PRMGenerator:
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
     def __init__(self, grid_width, grid_height, obstacles, num_nodes=100, connection_radius=0.8, init_seed_count=5):
@@ -902,22 +902,53 @@ class PRMRenderer:
             self.clock.tick(30)
         pygame.quit()
 
-
 if __name__ == "__main__":
     # 示例使用
-    grid_width = ENV_CONFIG['gridnum_width']
-    grid_height = ENV_CONFIG['gridnum_height']
-    cell_size = ENV_CONFIG['cell_size']
-    total_cells = grid_width * grid_height
-    num_obstacles = int(total_cells * 0.2)  # 20% 障碍物
-    obstacles = []
-    while len(obstacles) < num_obstacles:
-        x = np.random.randint(0, grid_width)
-        y = np.random.randint(0, grid_height)
-        obstacles.append((x, y))
+    ENVIRONMENT_TYPE = "maze" # <-- 在这里切换环境！  
+
+    if ENVIRONMENT_TYPE == "maze":  
+        # 迷宫环境特定配置  
+        ENV_CONFIG['gridnum_width'] = 49
+        ENV_CONFIG['gridnum_height'] = 49 
+        grid_width = ENV_CONFIG['gridnum_width']  
+        grid_height = ENV_CONFIG['gridnum_height']  
+        obstacles = generate_maze_obstacles(grid_width, grid_height)  
+        num_nodes = 400  
+        connection_radius = 0.6  
+        renderer_cell_size = 18 # 为适配屏幕调整渲染大小  
+        
+    elif ENVIRONMENT_TYPE == "indoor":  
+        # 室内环境特定配置  
+        ENV_CONFIG['gridnum_width'] = 50  
+        ENV_CONFIG['gridnum_height'] = 50  
+        grid_width = ENV_CONFIG['gridnum_width']  
+        grid_height = ENV_CONFIG['gridnum_height']  
+        obstacles = generate_indoor_obstacles(grid_width, grid_height)  
+        num_nodes = 350  
+        connection_radius = 0.8  
+        renderer_cell_size = 20  
+        
+    elif ENVIRONMENT_TYPE == "random":  
+        # 原始的随机环境  
+        ENV_CONFIG['gridnum_width'] = 40  
+        ENV_CONFIG['gridnum_height'] = 30  
+        grid_width = ENV_CONFIG['gridnum_width']  
+        grid_height = ENV_CONFIG['gridnum_height']  
+        total_cells = grid_width * grid_height  
+        num_obstacles = int(total_cells * 0.25)  # 25% 障碍物  
+        obstacles = []  
+        np.random.seed(43) # 使用不同的种子以获得不同的随机布局  
+        while len(obstacles) < num_obstacles:  
+            x = np.random.randint(0, grid_width)  
+            y = np.random.randint(0, grid_height)  
+            if (x, y) not in obstacles:  
+                obstacles.append((x, y))  
+        num_nodes = 320  
+        connection_radius = 0.7  
+        renderer_cell_size = 22  
     import time
     start_time = time.time()
-    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, num_nodes=320, connection_radius=0.6)
+    prm_generator = PRMGenerator(grid_width, grid_height, obstacles, num_nodes=500, connection_radius=0.6)
     (nodes,
      edges,
      medial_axis_nodes,
