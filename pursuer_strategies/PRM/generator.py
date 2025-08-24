@@ -845,128 +845,150 @@ class ClassicalPRM(BasePathPlanner):
         return self.nodes, self.edges
 
 class OptimalPRM(BasePathPlanner):
-    """PRM* - 渐近最优概率路径图"""
+    """高效的PRM*实现"""
     
     def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
-        self.dimension = 2  # 2D空间
+        self.dimension = 2
         
-        # PRM*特定参数
-        self.gamma = kwargs.get('gamma', 2.0 * ((1 + 1.0/self.dimension) * 
-                                               (self.grid_width * self.grid_height * ENV_CONFIG['cell_size']**2) / math.pi)**(1.0/self.dimension))
+        # 计算γ常数
+        total_area = self.grid_width * self.grid_height * (ENV_CONFIG['cell_size'] ** 2)
+        obstacle_area = len(obstacles) * (ENV_CONFIG['cell_size'] ** 2)
+        free_space_volume = max(total_area - obstacle_area, total_area * 0.5)
+        zeta_d = math.pi
+        self.gamma = kwargs.get('gamma', 
+            1.5 * (2 + 1.0/self.dimension) * (free_space_volume / zeta_d)**(1.0/self.dimension))
         
-        # 节点成本记录
-        self.node_costs = {}
-        self.node_parents = {}
+        # 使用更高效的数据结构
+        self.adjacency = {}  # 邻接列表
+        self.node_costs = {}  # 节点到"虚拟根"的距离（用于重连决策）
         
     def _connection_radius(self, n):
-        """计算PRM*的连接半径"""
+        """PRM*动态连接半径"""
         if n <= 1:
-            return float('inf')
-        return min(self.gamma * (math.log(n) / n)**(1.0/self.dimension), 
-                   self.grid_width * ENV_CONFIG['cell_size'])
+            return 1.0  # 初始半径
+        
+        radius = self.gamma * (math.log(n) / n) ** (1.0 / self.dimension)
+        return min(radius, 1.5)  # 限制最大半径
     
-    def _path_cost(self, node):
-        """计算从任意起点到该节点的路径成本（这里简化为到最近边界的距离）"""
+    def _estimate_path_quality(self, node):
+        """估算节点的路径质量（避免频繁的最短路径计算）"""
         if node not in self.node_costs:
-            # 简化：使用到边界的最小距离作为成本估计
+            # 使用到边界的距离作为简化的路径质量估计
             x, y = node
-            boundary_cost = min(x, y, 
+            boundary_dist = min(x, y,
                                self.grid_width * ENV_CONFIG['cell_size'] - x,
                                self.grid_height * ENV_CONFIG['cell_size'] - y)
-            self.node_costs[node] = boundary_cost
+            self.node_costs[node] = boundary_dist
         return self.node_costs[node]
     
-    def _rewire_neighbors(self, new_node, neighbors):
-        """PRM*重布线操作"""
-        new_cost = self._path_cost(new_node)
+    def _local_rewire(self, new_node, neighbors):
+        """局部重连：只检查直接连接优化，避免全图最短路径计算"""
+        optimizations = 0
+        new_quality = self._estimate_path_quality(new_node)
         
-        for neighbor in neighbors:
-            edge_cost = self._distance(new_node, neighbor)
-            potential_cost = new_cost + edge_cost
+        # 为每个邻居检查是否可以通过new_node改善连接
+        for neighbor, dist_to_new in neighbors:
+            if neighbor == new_node:
+                continue
+                
+            neighbor_quality = self._estimate_path_quality(neighbor)
             
-            if potential_cost < self._path_cost(neighbor):
-                # 检查边是否有效
-                if self._is_valid_edge(new_node, neighbor):
-                    # 更新邻居的成本和父节点
-                    self.node_costs[neighbor] = potential_cost
-                    self.node_parents[neighbor] = new_node
-                    
-                    # 更新边集（移除旧边，添加新边）
-                    old_parent = self.node_parents.get(neighbor)
-                    if old_parent is not None:
-                        # 移除旧边
-                        old_edges = [(old_parent, neighbor), (neighbor, old_parent)]
-                        self.edges = [e for e in self.edges if e not in old_edges]
-                    
-                    # 添加新边
-                    if (new_node, neighbor) not in self.edges and (neighbor, new_node) not in self.edges:
-                        self.edges.append((new_node, neighbor))
+            # 检查通过new_node是否能改善neighbor的路径质量
+            potential_quality = new_quality + dist_to_new
+            
+            # 简化的重连决策：基于局部质量比较
+            improvement_threshold = 0.1  # 必须有显著改善才重连
+            if potential_quality < neighbor_quality - improvement_threshold:
+                # 更新邻居的估算质量
+                self.node_costs[neighbor] = potential_quality
+                optimizations += 1
+        
+        return optimizations
+    
+    def _add_edge_safe(self, node1, node2, cost):
+        """安全添加边，避免重复"""
+        if node1 not in self.adjacency:
+            self.adjacency[node1] = {}
+        if node2 not in self.adjacency:
+            self.adjacency[node2] = {}
+        
+        # 只有不存在或成本更低时才添加/更新
+        current_cost = self.adjacency[node1].get(node2, float('inf'))
+        if cost < current_cost:
+            self.adjacency[node1][node2] = cost
+            self.adjacency[node2][node1] = cost
+            
+            # 更新边列表
+            edge = (node1, node2) if node1 < node2 else (node2, node1)
+            if edge not in self.edges:
+                self.edges.append(edge)
+            
+            return True
+        return False
     
     def generate_prm(self):
-        """生成PRM*路径图"""
-        print("开始生成PRM*...")
+        """生成高效PRM*路径图"""
+        print("开始生成高效PRM*...")
         start_time = time.time()
         
         self.nodes = []
         self.edges = []
+        self.adjacency = {}
         self.node_costs = {}
-        self.node_parents = {}
         
-        # 采样并逐步构建优化路径图
         sampled = 0
         attempts = 0
-        max_attempts = self.num_nodes * 10
+        max_attempts = self.num_nodes * 15
+        total_optimizations = 0
         
         while sampled < self.num_nodes and attempts < max_attempts:
             attempts += 1
-            sample = self._random_sample()
-            if sample is None:
+            
+            new_node = self._random_sample()
+            if new_node is None:
                 continue
             
-            self.nodes.append(sample)
-            self._path_cost(sample)  # 初始化成本
+            self.nodes.append(new_node)
             sampled += 1
             
-            # 计算当前连接半径
+            # 计算连接半径
             radius = self._connection_radius(len(self.nodes))
             
-            # 找到半径内的邻居
-            neighbors = [node for node in self.nodes[:-1] 
-                        if self._distance(sample, node) <= radius]
+            # 找邻居
+            neighbors = []
+            for other in self.nodes[:-1]:  # 排除自己
+                dist = self._distance(new_node, other)
+                if dist <= radius:
+                    neighbors.append((other, dist))
             
-            # 连接到最优邻居
-            best_neighbor = None
-            best_cost = float('inf')
+            # 连接到所有有效邻居
+            connections_made = 0
+            for neighbor, dist in neighbors:
+                if self._is_valid_edge(new_node, neighbor):
+                    if self._add_edge_safe(new_node, neighbor, dist):
+                        connections_made += 1
             
-            for neighbor in neighbors:
-                edge_cost = self._distance(sample, neighbor)
-                total_cost = self._path_cost(neighbor) + edge_cost
-                
-                if total_cost < best_cost and self._is_valid_edge(sample, neighbor):
-                    best_cost = total_cost
-                    best_neighbor = neighbor
+            # 轻量级重连优化
+            if len(neighbors) >= 2:
+                optimizations = self._local_rewire(new_node, neighbors)
+                total_optimizations += optimizations
             
-            # 连接到最优邻居
-            if best_neighbor is not None:
-                self.edges.append((sample, best_neighbor))
-                self.node_costs[sample] = best_cost
-                self.node_parents[sample] = best_neighbor
-            
-            # 重布线邻居节点
-            self._rewire_neighbors(sample, neighbors)
-            
-            if sampled % 50 == 0:
-                print(f"已生成 {sampled}/{self.num_nodes} 节点，当前边数: {len(self.edges)}")
+            if sampled % 100 == 0:
+                print(f"已生成 {sampled}/{self.num_nodes} 节点, "
+                      f"半径: {radius:.3f}, 边数: {len(self.edges)}")
         
         end_time = time.time()
-        print(f"PRM*生成完成！")
+        
+        print(f"\n高效PRM*生成完成!")
         print(f"节点数: {len(self.nodes)}")
         print(f"边数: {len(self.edges)}")
+        print(f"总优化次数: {total_optimizations}")
         print(f"生成时间: {end_time - start_time:.2f} 秒")
         
         return self.nodes, self.edges
+
 class PRMRenderer:
     """使用Pygame渲染PRM"""
     def __init__(self, grid_width, grid_height, cell_size=20):
@@ -1109,7 +1131,7 @@ if __name__ == "__main__":
         renderer_cell_size = 22  
     import time
     start_time = time.time()
-    prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=0.6)
+    prm_generator = OptimalPRM(grid_width, grid_height, obstacles, num_nodes=500, connection_radius=0.6)
     # (nodes,
     #  edges,
     #  medial_axis_nodes,
