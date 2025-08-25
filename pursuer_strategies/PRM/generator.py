@@ -11,14 +11,21 @@ from base_generator import BasePathPlanner
 
 class PRMGenerator(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=100, connection_radius=0.8, init_seed_count=5):
+    def __init__(self, grid_width, grid_height, obstacles,
+                num_nodes=100,
+                connection_radius=0.8,
+                init_seed_count=15,
+                beam_angle_step_deg=3,    # 新增: 光束角度分辨率(°)
+                beam_ray_step=0.08,       # 新增: 光束射线前进步长(米)
+                min_connection_radius=0.4
+                ):
         super().__init__(grid_width, grid_height, obstacles)
         self.num_nodes = num_nodes
         self.connection_radius = connection_radius
         self.init_seed_count = init_seed_count
-        self.num_nodes = num_nodes 
+        self.num_nodes = num_nodes
         self.connection_radius = connection_radius
-        self.min_connection_radius = 0.24
+        self.min_connection_radius = min_connection_radius
         self.nodes = []          # 统一节点列表
         self.edges = []
         self.collision_radius = 2 * ENV_CONFIG['agent_collision_radius'] / 3
@@ -31,6 +38,10 @@ class PRMGenerator(BasePathPlanner):
         self.medial_axis_paths = []  # 新增: 中轴骨架路径列表(每条为节点序列)
         self.node_explore_cones = {}  # 新增: 节点允许探索角域列表 [(start,end)], 角度制
         self.medial_axis_all_nodes = set()  # 新增: 中轴全集(包含简化后边端点)
+
+        # --- Beam 采样关键参数(集中管理) ---
+        self.beam_angle_step_deg = beam_angle_step_deg
+        self.beam_ray_step = beam_ray_step
 
     def _compute_clearance(self, node):
         """
@@ -81,14 +92,14 @@ class PRMGenerator(BasePathPlanner):
         """使用 KD 树加速最近邻节点距离检查。"""
         if position[0] is None:
             return True
-        
+    
         if not hasattr(self, 'node_kdtree') or self.node_kdtree is None or len(self.nodes) == 0:
             return self.check_near_radius(position)  # 回退到原方法
-            
+        
         # 使用 KD 树查询
         dist, _ = self.node_kdtree.query(np.array(position), k=1)
         return dist < self.min_connection_radius
-    
+
     def _bearing_deg(self, a, b):
         """从点 a 指向点 b 的方位角(0-360)."""
         dx = b[0] - a[0]
@@ -186,19 +197,17 @@ class PRMGenerator(BasePathPlanner):
 
     def beam_sampling(self, explore_node):
         """
-        从 explore_node 全向发射光束：
-        - 计算每 3° 光束最大可行距离
-        - 遍历相邻光束对，若差值 > min(short/5,1) 视为临界
-        - 为每个临界对生成两个候选节点：
-            1) 长光束方向距离 (short+long)/2
-            2) 短光束方向距离 short/2（short>0 时）
-        返回所有新候选节点列表（可能为空，已去重）
+        从 explore_node 全向发射光束:
+        使用实例参数:
+        beam_angle_step_deg: 光束角度步长
+        beam_ray_step: 沿光束方向离散检测步长
+        其它逻辑保持不变。
         """
         ex, ey = explore_node
         max_range = math.hypot(self.grid_width * ENV_CONFIG['cell_size'],
-                               self.grid_height * ENV_CONFIG['cell_size'])
-        step = 0.08
-        angles = self._get_allowed_angles(explore_node, step_deg=2)  # 改: 仅允许角域
+                            self.grid_height * ENV_CONFIG['cell_size'])
+        ray_step = self.beam_ray_step
+        angles = self._get_allowed_angles(explore_node, step_deg=self.beam_angle_step_deg)
         distances = []
         for ang in angles:
             theta = math.radians(ang)
@@ -211,7 +220,7 @@ class PRMGenerator(BasePathPlanner):
                 if not self._is_valid_position(px, py):
                     break
                 last_valid = t
-                t += step
+                t += ray_step
             distances.append(last_valid)
 
         new_nodes = []
@@ -256,24 +265,24 @@ class PRMGenerator(BasePathPlanner):
         # 预先计算所有候选点到现有节点的距离矩阵
         candidates_array = np.array(candidates)
         nodes_array = np.array(existing_nodes)
-        
+    
         # 使用广播计算距离矩阵
         dists = np.sqrt(np.sum((candidates_array[:, np.newaxis, :] - nodes_array[np.newaxis, :, :]) ** 2, axis=2))
-        
+    
         # 对每个候选点
         for i, candidate in enumerate(candidates):
             # 找出距离符合要求的节点
-            valid_indices = np.where((dists[i] <= self.connection_radius) & 
+            valid_indices = np.where((dists[i] <= self.connection_radius) &
                                     (dists[i] > self.min_connection_radius))[0]
-            
+        
             # 对这些节点检查边有效性
             for idx in valid_indices:
                 other = existing_nodes[idx]
                 if self._is_valid_edge(candidate, other):
                     valid_edges.append((candidate, other))
-                    
+                
         return valid_edges
-    
+
     def generate_nodes(self):
         """
         批量光束采样 + 探索队列（多源起始）：
@@ -314,8 +323,8 @@ class PRMGenerator(BasePathPlanner):
                         self.edges.append((candidate, other))
                         ang_c = self._bearing_deg(candidate, other)
                         ang_o = self._bearing_deg(other, candidate)
-                        self._remove_explore_sector(candidate, ang_c, 120)
-                        self._remove_explore_sector(other, ang_o, 120)
+                        self._remove_explore_sector(candidate, ang_c, 150)
+                        self._remove_explore_sector(other, ang_o, 150)
 
         if not frontier:
             print("未能生成任何起始种子，终止。")
@@ -328,7 +337,7 @@ class PRMGenerator(BasePathPlanner):
             explore_node = self.select_explore_node(frontier)
             if explore_node is None:
                 break
-            if len(self.nodes) % 5 == 0:
+            if len(self.nodes) % 10 == 0:
                 print(f"探索节点 {explore_node} | 已生成 {len(self.nodes)}/{self.num_nodes}")
             candidates = self.beam_sampling(explore_node)
 
@@ -405,19 +414,22 @@ class PRMGenerator(BasePathPlanner):
                         self.node_explore_cones[b] = [(0.0, 360.0)]
                     ang_ab = self._bearing_deg(a, b)
                     ang_ba = self._bearing_deg(b, a)
-                    self._remove_explore_sector(a, ang_ab, 90)
-                    self._remove_explore_sector(b, ang_ba, 90)
+                    self._remove_explore_sector(a, ang_ab, 120)
+                    self._remove_explore_sector(b, ang_ba, 120)
 
     def generate_prm(self):
         # 导入优化库(仅在需要时)
         import time
-        
+    
         self.generate_nodes()
+        time_a = time.time()
         self.prune_graph_components()  # 新增: 保留最大连通子图并去除孤立节点
         self.identify_medial_axis()
         self.connect_medial_shortest_paths(threshold=4.0)
         self.simplify_medial_axis()
         self._finalize_medial_axis()  # 新增: 统一收集所有中轴端点
+        time_b = time.time()
+        print(f"minus time: {time_b - time_a:.2f} 秒")
         return (self.nodes,
                 self.edges,
                 self.medial_axis_nodes,
@@ -459,7 +471,7 @@ class PRMGenerator(BasePathPlanner):
         1. 将所有节点按 clearance 从大到小排序
         2. 选取第一个作为中轴
         3. 依次尝试剩余节点: 若它与已选任一中轴节点具有 line-of-sight(无遮挡直线) 则跳过
-           否则加入中轴集合
+        否则加入中轴集合
         4. 构建中轴边: 所有成对可视的中轴节点间的连接
         """
         if not self.nodes:
@@ -512,8 +524,8 @@ class PRMGenerator(BasePathPlanner):
                 candidates = [
                     m for m in adjacency_set.get(x, [])
                     if m in medial_set and
-                       prev_node in adjacency_set.get(m, set()) and
-                       next_node in adjacency_set.get(m, set())
+                    prev_node in adjacency_set.get(m, set()) and
+                    next_node in adjacency_set.get(m, set())
                 ]
                 if candidates:
                     m_best = max(candidates, key=lambda n: self.node_clearance.get(n, 0.0))
@@ -605,16 +617,16 @@ class PRMGenerator(BasePathPlanner):
         """
         中轴简化规则:
         对每个中轴节点 m:
-          - 查找其在 PRM 中的普通邻居节点集合 N_normal(m) (非中轴节点)
-          - 若 N_normal(m) 中任意两节点 (u,v) 之间有中轴边相连
-          - 则删除该中轴边 (u,v)，并添加 (m,u) 和 (m,v) 作为中轴边
+        - 查找其在 PRM 中的普通邻居节点集合 N_normal(m) (非中轴节点)
+        - 若 N_normal(m) 中任意两节点 (u,v) 之间有中轴边相连
+        - 则删除该中轴边 (u,v)，并添加 (m,u) 和 (m,v) 作为中轴边
         作用: 将普通节点间的冗余中轴边重定向到中轴节点，形成以中轴为中心的星状结构。
         """
         if not self.medial_axis_nodes or not self.medial_axis_edges:
             return
 
         medial_set = set(self.medial_axis_nodes)
-        
+    
         # PRM 全图邻接关系
         full_adj = {n: set() for n in self.nodes}
         for a, b in self.edges:
@@ -628,40 +640,40 @@ class PRMGenerator(BasePathPlanner):
 
         # 当前中轴边集合
         medial_edges = {norm_edge(a, b) for (a, b) in self.medial_axis_edges}
-        
+    
         to_remove = set()
         to_add = set()
-        
+    
         # 遍历每个中轴节点
         for m in medial_set:
             # 获取普通邻居 (在 PRM 中相邻但不是中轴节点)
             normal_neighbors = [n for n in full_adj.get(m, []) if n not in medial_set]
-            
+        
             # 检查普通邻居对之间是否有中轴边
             for i in range(len(normal_neighbors)):
                 for j in range(i+1, len(normal_neighbors)):
                     u, v = normal_neighbors[i], normal_neighbors[j]
                     e_uv = norm_edge(u, v)
-                    
+                
                     # 如果普通邻居间有中轴边，移除它并添加到中轴
                     if e_uv in medial_edges:
                         to_remove.add(e_uv)
-                        
+                    
                         # 添加中轴到两个普通节点的中轴边
                         e_mu = norm_edge(m, u)
                         e_mv = norm_edge(m, v)
-                        
+                    
                         if e_mu not in medial_edges:
                             to_add.add(e_mu)
-                        
+                    
                         if e_mv not in medial_edges:
                             to_add.add(e_mv)
-    
+
         # 应用变更
         if to_remove or to_add:
             medial_edges.difference_update(to_remove)
             medial_edges.update(to_add)
-            
+        
             self.medial_axis_edges = medial_edges
             # 重建路径为简单的边列表
             self.medial_axis_paths = [[a, b] for (a, b) in self.medial_axis_edges]
@@ -734,12 +746,12 @@ class PRMGenerator(BasePathPlanner):
     def _is_cardinal_enclosed(self, x, y):
         """
         十字方向包围判定:
-          取四个偏移点 (±0.5*cs,0),(0,±0.5*cs)
-          统计落入障碍/越界的方向个数 blocked
-          条件:
-             - blocked >= 3  -> 判定被包围
-             - blocked == 2 且这两个方向不是一对相反 -> 判定被包围
-          返回 True 表示该节点应被丢弃
+        取四个偏移点 (±0.5*cs,0),(0,±0.5*cs)
+        统计落入障碍/越界的方向个数 blocked
+        条件:
+            - blocked >= 3  -> 判定被包围
+            - blocked == 2 且这两个方向不是一对相反 -> 判定被包围
+        返回 True 表示该节点应被丢弃
         """
         cs = ENV_CONFIG['cell_size']
         dirs = [(1,0),(-1,0),(0,1),(0,-1)]
@@ -765,23 +777,23 @@ class PRMGenerator(BasePathPlanner):
 
 class ClassicalPRM(BasePathPlanner):
     """经典概率路径图算法"""
-    
+
     def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, connection_radius=0.8, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
         self.connection_radius = connection_radius
-        
+    
     def _find_k_nearest_neighbors(self, node, k=10):
         """找到节点的k个最近邻居"""
         if len(self.nodes) <= 1:
             return []
-            
-        distances = [(self._distance(node, other), other) 
+        
+        distances = [(self._distance(node, other), other)
                     for other in self.nodes if other != node]
         distances.sort()
-        
-        return [neighbor for _, neighbor in distances[:min(k, len(distances))]]
     
+        return [neighbor for _, neighbor in distances[:min(k, len(distances))]]
+
     def _find_radius_neighbors(self, node):
         """找到连接半径内的所有邻居节点"""
         neighbors = []
@@ -789,21 +801,21 @@ class ClassicalPRM(BasePathPlanner):
             if other != node and self._distance(node, other) <= self.connection_radius:
                 neighbors.append(other)
         return neighbors
-    
+
     def generate_prm(self):
         """生成经典PRM路径图"""
         print("开始生成Classical PRM...")
         start_time = time.time()
-        
+    
         self.nodes = []
         self.edges = []
-        
+    
         # 第一阶段：采样节点
         print(f"采样 {self.num_nodes} 个节点...")
         sampled = 0
         attempts = 0
         max_attempts = self.num_nodes * 10
-        
+    
         while sampled < self.num_nodes and attempts < max_attempts:
             attempts += 1
             sample = self._random_sample()
@@ -812,18 +824,18 @@ class ClassicalPRM(BasePathPlanner):
                 sampled += 1
                 if sampled % 50 == 0:
                     print(f"已采样 {sampled}/{self.num_nodes} 节点")
-        
+    
         print(f"实际采样到 {len(self.nodes)} 个有效节点")
-        
+    
         # 第二阶段：连接节点
         print("连接节点...")
         edge_attempts = 0
         successful_edges = 0
-        
+    
         for i, node in enumerate(self.nodes):
             # 使用半径连接策略
             neighbors = self._find_radius_neighbors(node)
-            
+        
             for neighbor in neighbors:
                 # 避免重复连接
                 if (node, neighbor) not in self.edges and (neighbor, node) not in self.edges:
@@ -831,163 +843,467 @@ class ClassicalPRM(BasePathPlanner):
                     if self._is_valid_edge(node, neighbor):
                         self.edges.append((node, neighbor))
                         successful_edges += 1
-            
+        
             if i % 50 == 0 and i > 0:
                 print(f"已处理 {i}/{len(self.nodes)} 个节点，生成 {successful_edges} 条边")
-        
+    
         end_time = time.time()
         print(f"Classical PRM生成完成！")
         print(f"节点数: {len(self.nodes)}")
         print(f"边数: {len(self.edges)}")
         print(f"生成时间: {end_time - start_time:.2f} 秒")
         print(f"边连接成功率: {successful_edges/max(1,edge_attempts)*100:.1f}%")
-        
+    
         return self.nodes, self.edges
 
 class OptimalPRM(BasePathPlanner):
     """高效的PRM*实现"""
-    
+
     def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
         self.dimension = 2
-        
+    
         # 计算γ常数
         total_area = self.grid_width * self.grid_height * (ENV_CONFIG['cell_size'] ** 2)
         obstacle_area = len(obstacles) * (ENV_CONFIG['cell_size'] ** 2)
         free_space_volume = max(total_area - obstacle_area, total_area * 0.5)
         zeta_d = math.pi
-        self.gamma = kwargs.get('gamma', 
+        self.gamma = kwargs.get('gamma',
             1.5 * (2 + 1.0/self.dimension) * (free_space_volume / zeta_d)**(1.0/self.dimension))
-        
+    
         # 使用更高效的数据结构
         self.adjacency = {}  # 邻接列表
         self.node_costs = {}  # 节点到"虚拟根"的距离（用于重连决策）
-        
+    
     def _connection_radius(self, n):
         """PRM*动态连接半径"""
         if n <= 1:
             return 1.0  # 初始半径
-        
+    
         radius = self.gamma * (math.log(n) / n) ** (1.0 / self.dimension)
         return min(radius, 1.5)  # 限制最大半径
-    
+
     def _estimate_path_quality(self, node):
         """估算节点的路径质量（避免频繁的最短路径计算）"""
         if node not in self.node_costs:
             # 使用到边界的距离作为简化的路径质量估计
             x, y = node
             boundary_dist = min(x, y,
-                               self.grid_width * ENV_CONFIG['cell_size'] - x,
-                               self.grid_height * ENV_CONFIG['cell_size'] - y)
+                            self.grid_width * ENV_CONFIG['cell_size'] - x,
+                            self.grid_height * ENV_CONFIG['cell_size'] - y)
             self.node_costs[node] = boundary_dist
         return self.node_costs[node]
-    
+
     def _local_rewire(self, new_node, neighbors):
         """局部重连：只检查直接连接优化，避免全图最短路径计算"""
         optimizations = 0
         new_quality = self._estimate_path_quality(new_node)
-        
+    
         # 为每个邻居检查是否可以通过new_node改善连接
         for neighbor, dist_to_new in neighbors:
             if neighbor == new_node:
                 continue
-                
-            neighbor_quality = self._estimate_path_quality(neighbor)
             
+            neighbor_quality = self._estimate_path_quality(neighbor)
+        
             # 检查通过new_node是否能改善neighbor的路径质量
             potential_quality = new_quality + dist_to_new
-            
+        
             # 简化的重连决策：基于局部质量比较
             improvement_threshold = 0.1  # 必须有显著改善才重连
             if potential_quality < neighbor_quality - improvement_threshold:
                 # 更新邻居的估算质量
                 self.node_costs[neighbor] = potential_quality
                 optimizations += 1
-        
-        return optimizations
     
+        return optimizations
+
     def _add_edge_safe(self, node1, node2, cost):
         """安全添加边，避免重复"""
         if node1 not in self.adjacency:
             self.adjacency[node1] = {}
         if node2 not in self.adjacency:
             self.adjacency[node2] = {}
-        
+    
         # 只有不存在或成本更低时才添加/更新
         current_cost = self.adjacency[node1].get(node2, float('inf'))
         if cost < current_cost:
             self.adjacency[node1][node2] = cost
             self.adjacency[node2][node1] = cost
-            
+        
             # 更新边列表
             edge = (node1, node2) if node1 < node2 else (node2, node1)
             if edge not in self.edges:
                 self.edges.append(edge)
-            
+        
             return True
         return False
-    
+
     def generate_prm(self):
         """生成高效PRM*路径图"""
         print("开始生成高效PRM*...")
         start_time = time.time()
-        
+    
         self.nodes = []
         self.edges = []
         self.adjacency = {}
         self.node_costs = {}
-        
+    
         sampled = 0
         attempts = 0
         max_attempts = self.num_nodes * 15
         total_optimizations = 0
-        
+    
         while sampled < self.num_nodes and attempts < max_attempts:
             attempts += 1
-            
+        
             new_node = self._random_sample()
             if new_node is None:
                 continue
-            
+        
             self.nodes.append(new_node)
             sampled += 1
-            
+        
             # 计算连接半径
             radius = self._connection_radius(len(self.nodes))
-            
+        
             # 找邻居
             neighbors = []
             for other in self.nodes[:-1]:  # 排除自己
                 dist = self._distance(new_node, other)
                 if dist <= radius:
                     neighbors.append((other, dist))
-            
+        
             # 连接到所有有效邻居
             connections_made = 0
             for neighbor, dist in neighbors:
                 if self._is_valid_edge(new_node, neighbor):
                     if self._add_edge_safe(new_node, neighbor, dist):
                         connections_made += 1
-            
+        
             # 轻量级重连优化
             if len(neighbors) >= 2:
                 optimizations = self._local_rewire(new_node, neighbors)
                 total_optimizations += optimizations
-            
+        
             if sampled % 100 == 0:
                 print(f"已生成 {sampled}/{self.num_nodes} 节点, "
-                      f"半径: {radius:.3f}, 边数: {len(self.edges)}")
-        
+                    f"半径: {radius:.3f}, 边数: {len(self.edges)}")
+    
         end_time = time.time()
-        
+    
         print(f"\n高效PRM*生成完成!")
         print(f"节点数: {len(self.nodes)}")
         print(f"边数: {len(self.edges)}")
         print(f"总优化次数: {total_optimizations}")
         print(f"生成时间: {end_time - start_time:.2f} 秒")
-        
+    
         return self.nodes, self.edges
+
+
+class LazyPRM(BasePathPlanner):
+    """
+    Lazy PRM:
+    1) 采样全部节点
+    2) 基于半径建立候选边(不做碰撞检测, 设为 unknown)
+    3) 按需(或全部)验证边; 无效边被丢弃
+    优点: 初始构建快; 查询/需要路径时再逐步验证可延迟昂贵碰撞检测
+    """
+    def __init__(self, grid_width, grid_height, obstacles,
+                num_nodes=500, connection_radius=0.8,
+                validate_all=False, validate_batch=None, **kwargs):
+        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+        self.num_nodes = num_nodes
+        self.connection_radius = connection_radius
+        self.validate_all = validate_all          # True -> 立即验证全部边
+        self.validate_batch = validate_batch      # None -> 不主动验证; 否则验证前 N 条
+        self.edge_status = {}  # {(a,b): 'unknown'|'valid'|'invalid'}
+
+    def _ordered_edge(self, a, b):
+        return (a, b) if a <= b else (b, a)
+
+    def _sample_nodes(self):
+        self.nodes = []
+        attempts = 0
+        max_attempts = self.num_nodes * 15
+        while len(self.nodes) < self.num_nodes and attempts < max_attempts:
+            attempts += 1
+            pt = self._random_sample()
+            if pt:
+                self.nodes.append(pt)
+
+    def _build_candidate_edges(self):
+        # 简单 O(n^2) 半径连接; 可改 KDTree
+        n = len(self.nodes)
+        self.edges = []
+        self.edge_status = {}
+        for i in range(n):
+            a = self.nodes[i]
+            for j in range(i + 1, n):
+                b = self.nodes[j]
+                if self._distance(a, b) <= self.connection_radius:
+                    e = self._ordered_edge(a, b)
+                    self.edges.append(e)
+                    self.edge_status[e] = 'unknown'
+
+    def _validate_edge(self, edge):
+        if self.edge_status.get(edge) != 'unknown':
+            return
+        a, b = edge
+        if self._is_valid_edge(a, b):
+            self.edge_status[edge] = 'valid'
+        else:
+            self.edge_status[edge] = 'invalid'
+
+    def _post_validate(self):
+        # 根据策略验证
+        if self.validate_all:
+            for e in list(self.edges):
+                self._validate_edge(e)
+        elif self.validate_batch is not None:
+            cnt = 0
+            for e in self.edges:
+                if cnt >= self.validate_batch:
+                    break
+                if self.edge_status[e] == 'unknown':
+                    self._validate_edge(e)
+                    cnt += 1
+        # 过滤掉已判定 invalid 的边
+        self.edges = [e for e in self.edges if self.edge_status[e] != 'invalid']
+
+    def lazy_validate_remaining(self):
+        """外部可在需要时调用，完成剩余未知边验证"""
+        for e in list(self.edges):
+            if self.edge_status[e] == 'unknown':
+                self._validate_edge(e)
+        self.edges = [e for e in self.edges if self.edge_status[e] == 'valid']
+
+    def generate_prm(self):
+        import time
+        t0 = time.time()
+        self._sample_nodes()
+        t1 = time.time()
+        self._build_candidate_edges()
+        t2 = time.time()
+        self._post_validate()
+        t3 = time.time()
+        unknown = sum(1 for s in self.edge_status.values() if s == 'unknown')
+        print(f"LazyPRM 节点 {len(self.nodes)} | 候选边 {len(self.edge_status)} "
+            f"| 未验证 {unknown} | 采样 {t1-t0:.2f}s 建边 {t2-t1:.2f}s 验证 {t3-t2:.2f}s")
+        return self.nodes, self.edges
+
+
+class SPARS(BasePathPlanner):
+    """
+    精简版 SPARS (近似):
+    - 维护稀疏守卫集合 G
+    - 三类守卫: coverage / connectivity / quality
+    - 参数:
+        delta: 覆盖半径 (可视作可见 / 邻接候选距离阈值)
+        stretch_factor: 允许路径拉伸系数 t (>1)
+    - 策略(简化):
+        1) 采样 q
+        2) N = {g in G | dist(q,g) <= delta}
+            若 N 为空 -> 添加 q 为 coverage
+        3) 若 N 跨多个连通分量 -> 添加 q 为 connectivity, 连接能碰撞有效的邻居
+        4) 否则做质量改进:
+            对 N 中未直接相连的 (u,v):
+                若 dist(u,v) <= 2*delta 且 当前图上最短路(u,v) > t * dist(u,v)
+                若 q 与 u,v 均可连且边有效 -> 添加 q 为 quality, 连接 u,v
+    备注: 为简化未实现 interface guards / 可见域判定 (直接用欧式 + 碰撞边)
+    返回: nodes, edges, guard_types(dict), stats
+    """
+    def __init__(self, grid_width, grid_height, obstacles,
+                max_samples=5000, target_guards=400,
+                delta=0.9, stretch_factor=1.3,
+                rebuild_kdtree_interval=25,
+                **kwargs):
+        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+        self.max_samples = max_samples
+        self.target_guards = target_guards
+        self.delta = delta
+        self.t = stretch_factor
+        self.rebuild_iv = rebuild_kdtree_interval
+        self.nodes = []      # 守卫集合
+        self.edges = []      # 无向边 (a,b)
+        self.guard_type = {} # node -> 'COV'/'CONN'/'QUAL'
+        self._adj = {}       # 邻接: node -> set(neigh)
+        self._node_kdtree = None
+        self._rebuild_needed = True
+        self._insert_count = 0
+
+    # -------- 工具 --------
+    def _rebuild_kdtree(self, force=False):
+        if not self._rebuild_needed and not force:
+            return
+        if not self.nodes:
+            self._node_kdtree = None
+        else:
+            self._node_kdtree = KDTree(np.array(self.nodes))
+        self._rebuild_needed = False
+
+    def _neighbors_within_delta(self, q):
+        if not self.nodes:
+            return []
+        self._rebuild_kdtree()
+        idxs = self._node_kdtree.query_ball_point(np.array(q), self.delta)
+        return [self.nodes[i] for i in idxs if self.nodes[i] != q]
+
+    def _add_guard(self, q, gtype):
+        self.nodes.append(q)
+        self.guard_type[q] = gtype
+        self._adj[q] = set()
+        self._insert_count += 1
+        if self._insert_count % self.rebuild_iv == 0:
+            self._rebuild_needed = True
+
+    def _add_edge(self, a, b):
+        if b not in self._adj[a]:
+            if self._is_valid_edge(a, b):
+                self._adj[a].add(b)
+                self._adj[b].add(a)
+                self.edges.append((a, b))
+                return True
+        return False
+
+    def _connected_components(self):
+        comps = []
+        seen = set()
+        for n in self.nodes:
+            if n in seen: continue
+            stack = [n]
+            comp = []
+            seen.add(n)
+            while stack:
+                u = stack.pop()
+                comp.append(u)
+                for v in self._adj[u]:
+                    if v not in seen:
+                        seen.add(v); stack.append(v)
+            comps.append(comp)
+        return comps
+
+    def _component_id_map(self):
+        cid = {}
+        for i, comp in enumerate(self._connected_components()):
+            for n in comp:
+                cid[n] = i
+        return cid
+
+    def _dijkstra_dist(self, src, dst, cutoff=None):
+        # 早停 Dijkstra
+        import heapq
+        hq = [(0.0, src)]
+        dist = {src: 0.0}
+        while hq:
+            d, u = heapq.heappop(hq)
+            if cutoff and d > cutoff:
+                return float('inf')
+            if u == dst:
+                return d
+            if d > dist[u] + 1e-9:
+                continue
+            for v in self._adj[u]:
+                nd = d + self._distance(u, v)
+                if nd + 1e-9 < dist.get(v, float('inf')):
+                    dist[v] = nd
+                    heapq.heappush(hq, (nd, v))
+        return float('inf')
+
+    # -------- 主过程 --------
+    def generate_prm(self):
+        print("开始生成 SPARS (精简版)...")
+        import time
+        t0 = time.time()
+        samples = 0
+        added = 0
+        quality_adds = 0
+        connect_adds = 0
+        coverage_adds = 0
+
+        while samples < self.max_samples and added < self.target_guards:
+            samples += 1
+            q = self._random_sample()
+            if q is None:
+                continue
+
+            N = self._neighbors_within_delta(q)
+
+            # 1) 无邻居 => coverage
+            if not N:
+                self._add_guard(q, 'COV')
+                coverage_adds += 1
+                added += 1
+                continue
+
+            # 2) 组件分析
+            cid = self._component_id_map()
+            comp_ids = {cid[n] for n in N}
+            if len(comp_ids) >= 2:
+                # connectivity guard
+                self._add_guard(q, 'CONN')
+                added += 1
+                connect_adds += 1
+                # 连接到每个不同组件的一个代表
+                rep = {}
+                for n in N:
+                    c = cid[n]
+                    if c not in rep:
+                        rep[c] = n
+                reps = list(rep.values())
+                for r in reps:
+                    self._add_edge(q, r)
+                continue
+
+            # 3) 质量改进: 所有邻居在同一组件
+            improved = False
+            if len(N) >= 2:
+                # 构造邻居对
+                ln = len(N)
+                for i in range(ln):
+                    if improved: break
+                    for j in range(i+1, ln):
+                        u, v = N[i], N[j]
+                        # 已直接相连则跳过
+                        if v in self._adj[u]:
+                            continue
+                        duv = self._distance(u, v)
+                        if duv > 2 * self.delta:
+                            continue
+                        # 估计当前最短路
+                        cur_path = self._dijkstra_dist(u, v, cutoff=self.t * duv + 1e-6)
+                        if cur_path > self.t * duv:
+                            # 尝试通过 q 实现改进 (需要 q-u 与 q-v 边有效)
+                            if self._is_valid_edge(q, u) and self._is_valid_edge(q, v):
+                                self._add_guard(q, 'QUAL')
+                                added += 1
+                                quality_adds += 1
+                                self._add_edge(q, u)
+                                self._add_edge(q, v)
+                                improved = True
+                                break
+                            # 或直接添加 u-v (避免插入 q)
+                            elif self._is_valid_edge(u, v):
+                                self._add_edge(u, v)
+                                improved = True
+                                break
+            if not improved:
+                # 丢弃 q (不满足新增标准)
+                pass
+
+        t1 = time.time()
+        print(f"SPARS 完成: 守卫 {len(self.nodes)} / 目标 {self.target_guards}, 采样 {samples}, "
+            f"覆盖 {coverage_adds}, 连接 {connect_adds}, 质量 {quality_adds}, 耗时 {t1 - t0:.2f}s")
+        stats = {
+            'guards': len(self.nodes),
+            'samples': samples,
+            'coverage': coverage_adds,
+            'connectivity': connect_adds,
+            'quality': quality_adds,
+            'time': t1 - t0
+        }
+        return self.nodes, self.edges, self.guard_type, stats
 
 class PRMRenderer:
     """使用Pygame渲染PRM"""
@@ -1025,10 +1341,10 @@ class PRMRenderer:
             x1, y1 = a
             x2, y2 = b
             pygame.draw.line(self.screen, (0, 0, 255),
-                             (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
-                              int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
-                             (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
-                              int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 1)
+                            (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
+                            int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
+                            (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
+                            int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 1)
 
         # 中轴骨架路径优先绘制 (按折线)
         drawn_seg = set()
@@ -1044,10 +1360,10 @@ class PRMRenderer:
                 x1, y1 = a
                 x2, y2 = b
                 pygame.draw.line(self.screen, (0, 140, 0),
-                                 (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
-                                  int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
-                                 (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
-                                  int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
+                                (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
+                                int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
+                                (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
+                                int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
 
         # 若没有路径(兼容旧逻辑)则用边
         if not medial_axis_paths:
@@ -1055,16 +1371,16 @@ class PRMRenderer:
                 x1, y1 = a
                 x2, y2 = b
                 pygame.draw.line(self.screen, (0, 140, 0),
-                                 (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
-                                  int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
-                                 (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
-                                  int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
+                                (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
+                                int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
+                                (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
+                                int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
 
         # 绘制普通节点 & 中轴节点
         for node in nodes:
             x, y = node
             pos = (x * self.cell_size / ENV_CONFIG['cell_size'],
-                   y * self.cell_size / ENV_CONFIG['cell_size'])
+                y * self.cell_size / ENV_CONFIG['cell_size'])
             if node in medial_axis_nodes:
                 color = (0, 180, 0)    # 绿色: 中轴
                 radius = self.cell_size // 3
@@ -1087,19 +1403,19 @@ class PRMRenderer:
 
 if __name__ == "__main__":
     # 示例使用
-    ENVIRONMENT_TYPE = "maze" # <-- 在这里切换环境！  
+    ENVIRONMENT_TYPE = "random" # <-- 在这里切换环境！  
 
     if ENVIRONMENT_TYPE == "maze":  
         # 迷宫环境特定配置  
         ENV_CONFIG['gridnum_width'] = 49
-        ENV_CONFIG['gridnum_height'] = 49 
+        ENV_CONFIG['gridnum_height'] = 49
         grid_width = ENV_CONFIG['gridnum_width']  
         grid_height = ENV_CONFIG['gridnum_height']  
         obstacles = generate_maze_obstacles(grid_width, grid_height)  
         num_nodes = 400  
         connection_radius = 0.6  
         renderer_cell_size = 18 # 为适配屏幕调整渲染大小  
-        
+    
     elif ENVIRONMENT_TYPE == "indoor":  
         # 室内环境特定配置  
         ENV_CONFIG['gridnum_width'] = 50  
@@ -1110,7 +1426,7 @@ if __name__ == "__main__":
         num_nodes = 350  
         connection_radius = 0.8  
         renderer_cell_size = 20  
-        
+    
     elif ENVIRONMENT_TYPE == "random":  
         # 原始的随机环境  
         ENV_CONFIG['gridnum_width'] = 40  
@@ -1127,18 +1443,45 @@ if __name__ == "__main__":
             if (x, y) not in obstacles:  
                 obstacles.append((x, y))  
         num_nodes = 320  
-        connection_radius = 0.7  
+        connection_radius = 0.6  
         renderer_cell_size = 22  
     import time
     start_time = time.time()
-    prm_generator = OptimalPRM(grid_width, grid_height, obstacles, num_nodes=500, connection_radius=0.6)
-    # (nodes,
-    #  edges,
-    #  medial_axis_nodes,
-    #  medial_axis_all_nodes,   # 接收新增
-    #  medial_axis_edges,
-    #  medial_axis_paths) = prm_generator.generate_prm()
-    (nodes, edges) = prm_generator.generate_prm()
+    generator_name = "beam"
+    if generator_name == "classical":
+        prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=0.6)
+        (nodes, edges) = prm_generator.generate_prm()
+    elif generator_name == "optimal":
+        prm_generator = OptimalPRM(grid_width, grid_height, obstacles, num_nodes=450, connection_radius=1)
+        (nodes, edges) = prm_generator.generate_prm()
+    elif generator_name == "lazy":
+        prm_generator = LazyPRM(grid_width, grid_height, obstacles,
+                                num_nodes=400, connection_radius=0.8,
+                                validate_all=False, validate_batch=300)
+        (nodes, edges) = prm_generator.generate_prm()
+    elif generator_name == "beam":
+        #maze:550,1.5,25,0.2,0.4
+        #indoor:380,2,25(30),0.2,0.4
+        #random:700,1.2,3,0.08,0.3
+        # 可按需传入 beam_angle_step_deg / beam_ray_step 覆盖默认:
+        prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=700,
+                                    connection_radius=1.2,
+                                    beam_angle_step_deg=3,   # 可调整
+                                    beam_ray_step=0.08,
+                                    min_connection_radius=0.3)      # 可调整
+        (nodes,
+        edges,
+        medial_axis_nodes,
+        medial_axis_all_nodes,
+        medial_axis_edges,
+        medial_axis_paths) = prm_generator.generate_prm()
+    elif generator_name == "spars":
+        spars = SPARS(grid_width, grid_height, obstacles,
+                    max_samples=6000, target_guards=1000,
+                    delta=connection_radius, stretch_factor=5)
+        (nodes, edges, guard_types, stats) = spars.generate_prm()
+
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
     print(len(nodes), "nodes generated")
@@ -1149,5 +1492,6 @@ if __name__ == "__main__":
     # print(len(medial_axis_paths), "medial axis paths")
     renderer = PRMRenderer(grid_width, grid_height)
     # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
-    # renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+    #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
     renderer.run(nodes, edges, obstacles)
+
