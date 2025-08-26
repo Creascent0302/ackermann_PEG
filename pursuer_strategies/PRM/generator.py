@@ -856,243 +856,82 @@ class ClassicalPRM(BasePathPlanner):
     
         return self.nodes, self.edges
 
-class OptimalPRM(BasePathPlanner):
-    """高效的PRM*实现"""
+class PRMStar(BasePathPlanner):
+    """
+    渐进最优概率路径图算法 (PRM*)
+    该算法使用一个随采样点数量动态调整的连接半径，以理论上保证路径的渐进最优性。
+    """
 
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, gamma_prm_star=15.0, **kwargs):
+        """
+        初始化 PRM* 算法
+        :param num_nodes: 采样的节点数量
+        :param gamma_prm_star: PRM*算法中用于计算可变半径的常数。这个值需要根据环境进行调整。
+                               一个经验法则是，它应该略大于空间维度的2倍。
+        """
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
-        self.dimension = 2
+        self.gamma_prm_star = gamma_prm_star
+        # 空间的维度，对于2D平面是2
+        self.space_dimension = 2.0
     
-        # 计算γ常数
-        total_area = self.grid_width * self.grid_height * (ENV_CONFIG['cell_size'] ** 2)
-        obstacle_area = len(obstacles) * (ENV_CONFIG['cell_size'] ** 2)
-        free_space_volume = max(total_area - obstacle_area, total_area * 0.5)
-        zeta_d = math.pi
-        self.gamma = kwargs.get('gamma',
-            1.5 * (2 + 1.0/self.dimension) * (free_space_volume / zeta_d)**(1.0/self.dimension))
-    
-        # 使用更高效的数据结构
-        self.adjacency = {}  # 邻接列表
-        self.node_costs = {}  # 节点到"虚拟根"的距离（用于重连决策）
-    
-    def _connection_radius(self, n):
-        """PRM*动态连接半径"""
-        if n <= 1:
-            return 1.0  # 初始半径
-    
-        radius = self.gamma * (math.log(n) / n) ** (1.0 / self.dimension)
-        return min(radius, 1.5)  # 限制最大半径
-
-    def _estimate_path_quality(self, node):
-        """估算节点的路径质量（避免频繁的最短路径计算）"""
-        if node not in self.node_costs:
-            # 使用到边界的距离作为简化的路径质量估计
-            x, y = node
-            boundary_dist = min(x, y,
-                            self.grid_width * ENV_CONFIG['cell_size'] - x,
-                            self.grid_height * ENV_CONFIG['cell_size'] - y)
-            self.node_costs[node] = boundary_dist
-        return self.node_costs[node]
-
-    def _local_rewire(self, new_node, neighbors):
-        """局部重连：只检查直接连接优化，避免全图最短路径计算"""
-        optimizations = 0
-        new_quality = self._estimate_path_quality(new_node)
-    
-        # 为每个邻居检查是否可以通过new_node改善连接
-        for neighbor, dist_to_new in neighbors:
-            if neighbor == new_node:
-                continue
-            
-            neighbor_quality = self._estimate_path_quality(neighbor)
-        
-            # 检查通过new_node是否能改善neighbor的路径质量
-            potential_quality = new_quality + dist_to_new
-        
-            # 简化的重连决策：基于局部质量比较
-            improvement_threshold = 0.1  # 必须有显著改善才重连
-            if potential_quality < neighbor_quality - improvement_threshold:
-                # 更新邻居的估算质量
-                self.node_costs[neighbor] = potential_quality
-                optimizations += 1
-    
-        return optimizations
-
-    def _add_edge_safe(self, node1, node2, cost):
-        """安全添加边，避免重复"""
-        if node1 not in self.adjacency:
-            self.adjacency[node1] = {}
-        if node2 not in self.adjacency:
-            self.adjacency[node2] = {}
-    
-        # 只有不存在或成本更低时才添加/更新
-        current_cost = self.adjacency[node1].get(node2, float('inf'))
-        if cost < current_cost:
-            self.adjacency[node1][node2] = cost
-            self.adjacency[node2][node1] = cost
-        
-            # 更新边列表
-            edge = (node1, node2) if node1 < node2 else (node2, node1)
-            if edge not in self.edges:
-                self.edges.append(edge)
-        
-            return True
-        return False
-
     def generate_prm(self):
-        """生成高效PRM*路径图"""
-        print("开始生成高效PRM*...")
+        """
+        生成PRM*路径图。
+        该方法采用增量式构建，每采样一个新节点，就立刻根据可变半径尝试连接它。
+        """
+        print("开始生成 PRM* (可变半径)...")
         start_time = time.time()
     
         self.nodes = []
         self.edges = []
-        self.adjacency = {}
-        self.node_costs = {}
     
-        sampled = 0
+        print(f"采样并增量连接 {self.num_nodes} 个节点...")
+        sampled_count = 0
         attempts = 0
-        max_attempts = self.num_nodes * 15
-        total_optimizations = 0
+        max_attempts = self.num_nodes * 10
     
-        while sampled < self.num_nodes and attempts < max_attempts:
+        while sampled_count < self.num_nodes and attempts < max_attempts:
             attempts += 1
-        
+            # 1. 在自由空间中随机采样一个新节点
             new_node = self._random_sample()
             if new_node is None:
                 continue
         
+            # 2. 将新节点添加到图中
             self.nodes.append(new_node)
-            sampled += 1
-        
-            # 计算连接半径
-            radius = self._connection_radius(len(self.nodes))
-        
-            # 找邻居
-            neighbors = []
-            for other in self.nodes[:-1]:  # 排除自己
-                dist = self._distance(new_node, other)
-                if dist <= radius:
-                    neighbors.append((other, dist))
-        
-            # 连接到所有有效邻居
-            connections_made = 0
-            for neighbor, dist in neighbors:
-                if self._is_valid_edge(new_node, neighbor):
-                    if self._add_edge_safe(new_node, neighbor, dist):
-                        connections_made += 1
-        
-            # 轻量级重连优化
-            if len(neighbors) >= 2:
-                optimizations = self._local_rewire(new_node, neighbors)
-                total_optimizations += optimizations
-        
-            if sampled % 100 == 0:
-                print(f"已生成 {sampled}/{self.num_nodes} 节点, "
-                    f"半径: {radius:.3f}, 边数: {len(self.edges)}")
+            sampled_count += 1
+            
+            n = len(self.nodes)
+
+            # 3. PRM* 核心: 计算可变连接半径
+            # 半径 r = gamma * (log(n)/n)^(1/d)
+            # 当n=1时, log(n)=0, 半径为0, 不进行连接
+            if n > 1:
+                radius = self.gamma_prm_star * (math.log(n) / n)**(1.0 / self.space_dimension)
+            
+                # 4. 寻找新节点在可变半径内的邻居
+                # 注意: 为了最高效率, 这里的节点搜索也应该用KDTree, 但为保持与原代码结构一致, 此处使用遍历
+                neighbors = []
+                for existing_node in self.nodes[:-1]: # 遍历除新节点外的所有已有节点
+                    if self._distance(new_node, existing_node) <= radius:
+                        neighbors.append(existing_node)
+            
+                # 5. 尝试连接新节点与它的邻居
+                for neighbor in neighbors:
+                    if self._is_valid_edge(new_node, neighbor):
+                        self.edges.append((new_node, neighbor))
+
+            if sampled_count % 50 == 0 and sampled_count > 0:
+                print(f"已处理 {sampled_count}/{self.num_nodes} 个节点，图中有 {len(self.edges)} 条边")
     
         end_time = time.time()
-    
-        print(f"\n高效PRM*生成完成!")
-        print(f"节点数: {len(self.nodes)}")
-        print(f"边数: {len(self.edges)}")
-        print(f"总优化次数: {total_optimizations}")
+        print(f"PRM* 生成完成！")
+        print(f"实际采样节点数: {len(self.nodes)}")
+        print(f"生成边数: {len(self.edges)}")
         print(f"生成时间: {end_time - start_time:.2f} 秒")
     
         return self.nodes, self.edges
-
-
-class LazyPRM(BasePathPlanner):
-    """
-    Lazy PRM:
-    1) 采样全部节点
-    2) 基于半径建立候选边(不做碰撞检测, 设为 unknown)
-    3) 按需(或全部)验证边; 无效边被丢弃
-    优点: 初始构建快; 查询/需要路径时再逐步验证可延迟昂贵碰撞检测
-    """
-    def __init__(self, grid_width, grid_height, obstacles,
-                num_nodes=500, connection_radius=0.8,
-                validate_all=False, validate_batch=None, **kwargs):
-        super().__init__(grid_width, grid_height, obstacles, **kwargs)
-        self.num_nodes = num_nodes
-        self.connection_radius = connection_radius
-        self.validate_all = validate_all          # True -> 立即验证全部边
-        self.validate_batch = validate_batch      # None -> 不主动验证; 否则验证前 N 条
-        self.edge_status = {}  # {(a,b): 'unknown'|'valid'|'invalid'}
-
-    def _ordered_edge(self, a, b):
-        return (a, b) if a <= b else (b, a)
-
-    def _sample_nodes(self):
-        self.nodes = []
-        attempts = 0
-        max_attempts = self.num_nodes * 15
-        while len(self.nodes) < self.num_nodes and attempts < max_attempts:
-            attempts += 1
-            pt = self._random_sample()
-            if pt:
-                self.nodes.append(pt)
-
-    def _build_candidate_edges(self):
-        # 简单 O(n^2) 半径连接; 可改 KDTree
-        n = len(self.nodes)
-        self.edges = []
-        self.edge_status = {}
-        for i in range(n):
-            a = self.nodes[i]
-            for j in range(i + 1, n):
-                b = self.nodes[j]
-                if self._distance(a, b) <= self.connection_radius:
-                    e = self._ordered_edge(a, b)
-                    self.edges.append(e)
-                    self.edge_status[e] = 'unknown'
-
-    def _validate_edge(self, edge):
-        if self.edge_status.get(edge) != 'unknown':
-            return
-        a, b = edge
-        if self._is_valid_edge(a, b):
-            self.edge_status[edge] = 'valid'
-        else:
-            self.edge_status[edge] = 'invalid'
-
-    def _post_validate(self):
-        # 根据策略验证
-        if self.validate_all:
-            for e in list(self.edges):
-                self._validate_edge(e)
-        elif self.validate_batch is not None:
-            cnt = 0
-            for e in self.edges:
-                if cnt >= self.validate_batch:
-                    break
-                if self.edge_status[e] == 'unknown':
-                    self._validate_edge(e)
-                    cnt += 1
-        # 过滤掉已判定 invalid 的边
-        self.edges = [e for e in self.edges if self.edge_status[e] != 'invalid']
-
-    def lazy_validate_remaining(self):
-        """外部可在需要时调用，完成剩余未知边验证"""
-        for e in list(self.edges):
-            if self.edge_status[e] == 'unknown':
-                self._validate_edge(e)
-        self.edges = [e for e in self.edges if self.edge_status[e] == 'valid']
-
-    def generate_prm(self):
-        import time
-        t0 = time.time()
-        self._sample_nodes()
-        t1 = time.time()
-        self._build_candidate_edges()
-        t2 = time.time()
-        self._post_validate()
-        t3 = time.time()
-        unknown = sum(1 for s in self.edge_status.values() if s == 'unknown')
-        print(f"LazyPRM 节点 {len(self.nodes)} | 候选边 {len(self.edge_status)} "
-            f"| 未验证 {unknown} | 采样 {t1-t0:.2f}s 建边 {t2-t1:.2f}s 验证 {t3-t2:.2f}s")
-        return self.nodes, self.edges
-
 
 class SPARS(BasePathPlanner):
     """
@@ -1307,7 +1146,7 @@ class SPARS(BasePathPlanner):
 
 class PRMRenderer:
     """使用Pygame渲染PRM"""
-    def __init__(self, grid_width, grid_height, cell_size=20):
+    def __init__(self, grid_width, grid_height, cell_size=15):
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.cell_size = cell_size
@@ -1403,7 +1242,10 @@ class PRMRenderer:
 
 if __name__ == "__main__":
     # 示例使用
-    ENVIRONMENT_TYPE = "random" # <-- 在这里切换环境！  
+    ENVIRONMENT_TYPE = "maze" # <-- 在这里切换环境！  
+    np.random.seed(42)  # 固定随机种子以获得可重复结果
+    import random
+    random.seed(42)
 
     if ENVIRONMENT_TYPE == "maze":  
         # 迷宫环境特定配置  
@@ -1414,7 +1256,6 @@ if __name__ == "__main__":
         obstacles = generate_maze_obstacles(grid_width, grid_height)  
         num_nodes = 400  
         connection_radius = 0.6  
-        renderer_cell_size = 18 # 为适配屏幕调整渲染大小  
     
     elif ENVIRONMENT_TYPE == "indoor":  
         # 室内环境特定配置  
@@ -1425,7 +1266,6 @@ if __name__ == "__main__":
         obstacles = generate_indoor_obstacles(grid_width, grid_height)  
         num_nodes = 350  
         connection_radius = 0.8  
-        renderer_cell_size = 20  
     
     elif ENVIRONMENT_TYPE == "random":  
         # 原始的随机环境  
@@ -1444,38 +1284,60 @@ if __name__ == "__main__":
                 obstacles.append((x, y))  
         num_nodes = 320  
         connection_radius = 0.6  
-        renderer_cell_size = 22  
     import time
     start_time = time.time()
-    generator_name = "beam"
+
+    generator_name = "star" # "classical" / "star" / "beam" / "spars"
+
     if generator_name == "classical":
         prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=0.6)
         (nodes, edges) = prm_generator.generate_prm()
-    elif generator_name == "optimal":
-        prm_generator = OptimalPRM(grid_width, grid_height, obstacles, num_nodes=450, connection_radius=1)
+
+    elif generator_name == "star":
+        prm_generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=1)
         (nodes, edges) = prm_generator.generate_prm()
-    elif generator_name == "lazy":
-        prm_generator = LazyPRM(grid_width, grid_height, obstacles,
-                                num_nodes=400, connection_radius=0.8,
-                                validate_all=False, validate_batch=300)
-        (nodes, edges) = prm_generator.generate_prm()
+
     elif generator_name == "beam":
         #maze:550,1.5,25,0.2,0.4
         #indoor:380,2,25(30),0.2,0.4
         #random:700,1.2,3,0.08,0.3
         # 可按需传入 beam_angle_step_deg / beam_ray_step 覆盖默认:
-        prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
-                                    num_nodes=700,
+        if ENVIRONMENT_TYPE == "random":
+            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=1000,
                                     connection_radius=1.2,
-                                    beam_angle_step_deg=3,   # 可调整
+                                    beam_angle_step_deg=3,
                                     beam_ray_step=0.08,
-                                    min_connection_radius=0.3)      # 可调整
+                                    min_connection_radius=0.3)
+        elif ENVIRONMENT_TYPE == "maze":
+            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=1000,
+                                    connection_radius=1.5,
+                                    beam_angle_step_deg=25,
+                                    beam_ray_step=0.2,
+                                    min_connection_radius=0.4)
+        elif ENVIRONMENT_TYPE == "indoor":
+            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=1000,
+                                    connection_radius=2,
+                                    beam_angle_step_deg=25,
+                                    beam_ray_step=0.2,
+                                    min_connection_radius=0.4)
+        else:
+            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+                                    num_nodes=1000,
+                                    connection_radius=1.5,
+                                    beam_angle_step_deg=10,
+                                    beam_ray_step=0.15,
+                                    min_connection_radius=0.4)
+
         (nodes,
         edges,
         medial_axis_nodes,
         medial_axis_all_nodes,
         medial_axis_edges,
         medial_axis_paths) = prm_generator.generate_prm()
+
     elif generator_name == "spars":
         spars = SPARS(grid_width, grid_height, obstacles,
                     max_samples=6000, target_guards=1000,
