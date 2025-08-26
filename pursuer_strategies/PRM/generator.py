@@ -8,8 +8,10 @@ import math
 import heapq  # 新增: 最短路
 from map_generator import generate_indoor_obstacles, generate_maze_obstacles
 from base_generator import BasePathPlanner
+import time
+import os
 
-class PRMGenerator(BasePathPlanner):
+class BeamPRM(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
     def __init__(self, grid_width, grid_height, obstacles,
                 num_nodes=100,
@@ -1144,34 +1146,58 @@ class SPARS(BasePathPlanner):
         }
         return self.nodes, self.edges, self.guard_type, stats
 
+def save_pdf_image(screen, filepath):
+    """将pygame screen保存为PDF文件"""    
+    # 使用PIL将PNG转换为PDF
+    try:
+        from PIL import Image
+        w, h = screen.get_size()
+        raw_data = pygame.image.tostring(screen, 'RGB')
+        pil_image = Image.frombytes('RGB', (w, h), raw_data)
+        pil_image.save(filepath, "PDF", quality=95)
+    except Exception as e:
+        print(f"保存PDF时出错: {e}")
+
+
 class PRMRenderer:
-    """使用Pygame渲染PRM"""
-    def __init__(self, grid_width, grid_height, cell_size=15):
-        self.grid_width = grid_width
+    """使用Pygame渲染PRM - 支持保存PDF"""
+    def __init__(self, grid_width, grid_height, cell_size=15, headless=False):
+        self.grid_width = grid_width    
         self.grid_height = grid_height
         self.cell_size = cell_size
         self.screen_width = grid_width * cell_size
         self.screen_height = grid_height * cell_size
-        pygame.init()
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-        pygame.display.set_caption("PRM Visualization")
+        self.headless = headless
+        
+        # 确保pygame已初始化
+        if not pygame.get_init():
+            pygame.init()
+        
+        if headless:
+            # 无头模式：创建内存Surface
+            self.screen = pygame.Surface((self.screen_width, self.screen_height))
+        else:
+            # 可视模式：创建实际窗口
+            self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+            pygame.display.set_caption("PRM Visualization")
+            
         self.clock = pygame.time.Clock()
 
     def render(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
         """渲染PRM"""
-        self.screen.fill((255, 255, 255))  # 白色背景
+        self.screen.fill((229, 221, 215))  # 背景
 
         # 绘制障碍物
         for obs in obstacles:
             x, y = obs
             rect = pygame.Rect(int(x * self.cell_size), int(y * self.cell_size), self.cell_size, self.cell_size)
-            pygame.draw.rect(self.screen, (0, 0, 0), rect)  # 黑色障碍物
+            pygame.draw.rect(self.screen, (0, 49, 83), rect)  # 障碍物
 
         medial_axis_nodes = medial_axis_nodes or set()
         medial_axis_edges = medial_axis_edges or set()
         medial_axis_paths = medial_axis_paths or []
 
-        # 普通边 (过滤掉骨架边端点对)
+        # 普通边
         for edge in edges:
             a, b = edge
             key = edge if a <= b else (b, a)
@@ -1179,13 +1205,13 @@ class PRMRenderer:
                 continue
             x1, y1 = a
             x2, y2 = b
-            pygame.draw.line(self.screen, (0, 0, 255),
+            pygame.draw.line(self.screen, (40, 100, 180),
                             (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
                             int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
                             (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
                             int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 1)
 
-        # 中轴骨架路径优先绘制 (按折线)
+        # 中轴骨架路径
         drawn_seg = set()
         for path in medial_axis_paths:
             if len(path) < 2:
@@ -1204,7 +1230,7 @@ class PRMRenderer:
                                 (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
                                 int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
 
-        # 若没有路径(兼容旧逻辑)则用边
+        # 若没有路径则用边
         if not medial_axis_paths:
             for a, b in medial_axis_edges:
                 x1, y1 = a
@@ -1215,22 +1241,30 @@ class PRMRenderer:
                                 (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
                                 int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
 
-        # 绘制普通节点 & 中轴节点
+        # 绘制节点
         for node in nodes:
             x, y = node
-            pos = (x * self.cell_size / ENV_CONFIG['cell_size'],
-                y * self.cell_size / ENV_CONFIG['cell_size'])
+            pos = (int(x * self.cell_size / ENV_CONFIG['cell_size']),
+                  int(y * self.cell_size / ENV_CONFIG['cell_size']))
             if node in medial_axis_nodes:
                 color = (0, 180, 0)    # 绿色: 中轴
                 radius = self.cell_size // 3
             else:
-                color = (255, 0, 0)    # 红色: 普通
+                color = (255, 91, 0)    # 红色: 普通
                 radius = self.cell_size // 4
             pygame.draw.circle(self.screen, color, pos, radius)
-        pygame.display.flip()
+        if not self.headless:
+            pygame.display.flip()
+        return self.screen
+
+    def save_image(self, nodes, edges, obstacles, filepath, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+        """渲染并保存图像"""
+        screen = self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+        save_pdf_image(screen, filepath)
+        print(f"图像已保存到: {filepath}")
 
     def run(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
-        """运行渲染器"""
+        """运行渲染器（交互模式）"""
         running = True
         while running:
             for event in pygame.event.get():
@@ -1239,6 +1273,7 @@ class PRMRenderer:
             self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
             self.clock.tick(30)
         pygame.quit()
+
 
 if __name__ == "__main__":
     # 示例使用
@@ -1287,7 +1322,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "star" # "classical" / "star" / "beam" / "spars"
+    generator_name = "beam" # "classical" / "star" / "beam" / "spars" / "fmt" / "bit"
 
     if generator_name == "classical":
         prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=0.6)
@@ -1303,28 +1338,28 @@ if __name__ == "__main__":
         #random:700,1.2,3,0.08,0.3
         # 可按需传入 beam_angle_step_deg / beam_ray_step 覆盖默认:
         if ENVIRONMENT_TYPE == "random":
-            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.2,
                                     beam_angle_step_deg=3,
                                     beam_ray_step=0.08,
                                     min_connection_radius=0.3)
         elif ENVIRONMENT_TYPE == "maze":
-            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.5,
                                     beam_angle_step_deg=25,
                                     beam_ray_step=0.2,
                                     min_connection_radius=0.4)
         elif ENVIRONMENT_TYPE == "indoor":
-            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=2,
                                     beam_angle_step_deg=25,
                                     beam_ray_step=0.2,
                                     min_connection_radius=0.4)
         else:
-            prm_generator = PRMGenerator(grid_width, grid_height, obstacles,
+            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.5,
                                     beam_angle_step_deg=10,
