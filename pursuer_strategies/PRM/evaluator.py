@@ -235,7 +235,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
     random.seed(seed)
     
     # 设置基础路径 - 修复路径
-    base_results_path = "/Users/bytedance/Desktop/2025summer/code/ackermann_PEG/pursuer_strategies/PRM/results"
+    base_results_path = "./pursuer_strategies/PRM/results"
     
     # 设置环境参数
     if environment_type == "maze":
@@ -409,8 +409,8 @@ def run_full_evaluation():
             total_tests += len(algorithms)
     
     current_test = 0
-    base_results_path = "/Users/bytedance/Desktop/2025summer/code/ackermann_PEG/pursuer_strategies/PRM/results"
-    
+    base_results_path = "./pursuer_strategies/PRM/results"
+
     print(f"开始运行 {total_tests} 个测试...")
     print(f"结果将保存到: {base_results_path}")
     
