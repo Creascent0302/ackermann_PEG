@@ -192,23 +192,9 @@ def save_metrics_to_file(metrics, filepath):
     # 确保目录存在
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     
-    # 保存为CSV
-    csv_filepath = filepath
-    file_exists = os.path.isfile(csv_filepath)
-    
-    with open(csv_filepath, 'a', newline='') as f:
+    with open(filepath, 'a', newline='') as f:
         writer = csv.writer(f)
-        
-        # 如果文件不存在，写入表头
-        if not file_exists:
-            writer.writerow([
-                'timestamp', 'algorithm', 'environment', 'seed',
-                'generation_time', 'nodes_count', 'edges_count',
-                'beam_connectivity_score', 'num_components', 'largest_component_ratio',
-                'average_degree', 'node_density', 'edge_density',
-                'target_nodes', 'connection_radius'
-            ])
-        
+
         # 写入数据
         writer.writerow([
             metrics['timestamp'],
@@ -413,6 +399,22 @@ def run_full_evaluation():
 
     print(f"开始运行 {total_tests} 个测试...")
     print(f"结果将保存到: {base_results_path}")
+
+    # 清空所有CSV文件
+    for env, _ in test_configs:
+        metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
+        # 创建文件夹如果不存在
+        os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
+        # 写入表头
+        with open(metrics_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'algorithm', 'environment', 'seed',
+                'generation_time', 'nodes_count', 'edges_count',
+                'beam_connectivity_score', 'num_components', 'largest_component_ratio',
+                'average_degree', 'node_density', 'edge_density',
+                'target_nodes', 'connection_radius'
+            ])
     
     for num_node in num_nodes:
         for env, use_seeds in test_configs:

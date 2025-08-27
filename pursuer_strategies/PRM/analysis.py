@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 # 设置输出目录
-output_dir = "./results/charts"
+output_dir = "./pursuer_strategies/PRM/results/charts"
 os.makedirs(output_dir, exist_ok=True)
 
 # 要分析的指标
@@ -34,7 +34,7 @@ algorithm_display = {
 }
 
 # 设置颜色
-colors = ['#4E79A7', '#F28E2B', '#E15759', '#76B7B2']
+colors = ['#E38691', '#F5C326', '#BACBA9', "#B7CAD9"]
 
 # 处理每个文件
 for file_path in files:
@@ -44,8 +44,20 @@ for file_path in files:
     # 读取CSV文件
     df = pd.read_csv(file_path)
     
+    # 检查文件是否为空
+    if df.empty:
+        print(f"警告: {file_path} 为空，跳过")
+        continue
+    
     # 获取不同的target_nodes值（采样次数）
     target_nodes = sorted(df['target_nodes'].unique())
+    
+    # 检查是否存在采样数据
+    if len(target_nodes) == 0:
+        print(f"警告: {file_path} 中没有找到任何采样数据，跳过")
+        continue
+    
+    print(f"处理 {env_name} 环境, 检测到的采样数量: {target_nodes}")
     
     # 获取所有算法
     algorithms = ['classical', 'star', 'beam', 'spars']
@@ -63,41 +75,47 @@ for file_path in files:
             # 收集该算法在不同target_nodes下的指标值
             values = []
             for node in target_nodes:
-                # 计算该算法在特定target_nodes下的平均指标值
+                # 计算该算法在特定target_nodes下所有随机种子的平均指标值
                 subset = df[(df['target_nodes'] == node) & (df['algorithm'] == algorithm)]
+                
                 if not subset.empty:
-                    values.append(subset[metric].mean())
+                    # 对于每个algorithm-node组合，可能有多个随机种子，我们计算所有随机种子的平均值
+                    avg_value = subset[metric].mean()
+                    values.append(avg_value)
+                    print(f"  {env_name}, {algorithm}, target_nodes={node}, {metric}平均值: {avg_value:.4f} (来自{len(subset)}个样本)")
                 else:
+                    print(f"  警告: {env_name}, {algorithm}, target_nodes={node} 没有数据")
                     values.append(0)
             
             # 绘制条形
             plt.bar(x + i*bar_width, values, bar_width, 
                     label=algorithm_display[algorithm], 
                     color=colors[i],
-                    edgecolor='black',
-                    linewidth=0.5)
+                    edgecolor='none')  # 移除边框
         
-        # 添加数值标签（仅对部分重要指标）
-        if metric in ['generation_time', 'beam_connectivity_score']:
-            for i, algorithm in enumerate(algorithms):
-                values = []
-                for node in target_nodes:
-                    subset = df[(df['target_nodes'] == node) & (df['algorithm'] == algorithm)]
-                    if not subset.empty:
-                        values.append(subset[metric].mean())
-                    else:
-                        values.append(0)
-                
-                for j, v in enumerate(values):
-                    if v > 0:  # 只标注非零值
-                        if metric == 'generation_time':
-                            # 时间值保留2位小数
-                            plt.text(x[j] + i*bar_width, v + 0.1, f"{v:.2f}", 
-                                    ha='center', va='bottom', fontsize=8, rotation=0)
-                        elif metric == 'beam_connectivity_score':
-                            # 评分保留2位小数
-                            plt.text(x[j] + i*bar_width, v + 0.01, f"{v:.2f}", 
-                                    ha='center', va='bottom', fontsize=8, rotation=0)
+        # 添加数值标签（所有指标）
+        for i, algorithm in enumerate(algorithms):
+            values = []
+            for node in target_nodes:
+                subset = df[(df['target_nodes'] == node) & (df['algorithm'] == algorithm)]
+                if not subset.empty:
+                    values.append(subset[metric].mean())
+                else:
+                    values.append(0)
+            
+            for j, v in enumerate(values):
+                if v > 0:  # 只标注非零值
+                    if metric == 'generation_time':
+                        # 时间值保留2位小数
+                        plt.text(x[j] + i*bar_width, v + 0.1, f"{v:.2f}", 
+                                ha='center', va='bottom', fontsize=8, rotation=0)
+                    elif metric == 'beam_connectivity_score':
+                        # 评分保留2位小数
+                        plt.text(x[j] + i*bar_width, v + 0.01, f"{v:.2f}", 
+                                ha='center', va='bottom', fontsize=8, rotation=0)
+                    elif metric in ['nodes_count', 'edges_count']:
+                        plt.text(x[j] + i*bar_width, v + v*0.03, f"{int(v)}", 
+                                ha='center', va='bottom', fontsize=8, rotation=0)
         
         # 设置图表标题和标签
         env_display = {"indoor": "Indoor", "random": "Random", "maze": "Maze"}
@@ -112,8 +130,11 @@ for file_path in files:
         plt.legend(loc='best')
         
         # 添加网格线便于阅读
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
-        
+        plt.grid(axis='y', linestyle=':', alpha=0.7)
+        # 去除上边框和右边框
+        ax = plt.gca()  # 获取当前坐标轴
+        ax.spines['top'].set_visible(False)  # 隐藏上边框
+        ax.spines['right'].set_visible(False)  # 隐藏右边框
         # 调整布局
         plt.tight_layout()
         
