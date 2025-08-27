@@ -228,7 +228,7 @@ def save_metrics_to_file(metrics, filepath):
             metrics['connection_radius']
         ])
 
-def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True):
+def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_images=True):
     """运行单个算法测试"""
     np.random.seed(seed)
     import random
@@ -244,16 +244,14 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_maze_obstacles(grid_width, grid_height)
-        num_nodes = 400
-        connection_radius = 0.6
+        connection_radius = 2.0
     elif environment_type == "indoor":
         ENV_CONFIG['gridnum_width'] = 50
         ENV_CONFIG['gridnum_height'] = 50
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
-        num_nodes = 350
-        connection_radius = 0.8
+        connection_radius = 1.5
     elif environment_type == "random":
         ENV_CONFIG['gridnum_width'] = 40
         ENV_CONFIG['gridnum_height'] = 30
@@ -267,8 +265,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
             y = np.random.randint(0, grid_height)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
-        num_nodes = 320
-        connection_radius = 0.6
+        connection_radius = 1.0
     else:
         raise ValueError(f"Unknown environment type: {environment_type}")
     
@@ -371,10 +368,11 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         os.makedirs(env_dir, exist_ok=True)
         
         # 生成文件名
+        # 在run_algorithm_test函数中修改文件名生成逻辑
         if environment_type == 'indoor':
-            filename = f"{algorithm_name}_{environment_type}.pdf"
+            filename = f"{algorithm_name}_{environment_type}_{num_nodes}.pdf"
         else:
-            filename = f"{algorithm_name}_{environment_type}_{seed}.pdf"
+            filename = f"{algorithm_name}_{environment_type}_{seed}_{num_nodes}.pdf"        
         filepath = os.path.join(env_dir, filename)
         
         # 使用generator.py中的PRMRenderer保存图像
@@ -392,7 +390,7 @@ def run_full_evaluation():
     """运行完整的评测流程"""
     algorithms = ['classical', 'star', 'beam', 'spars']
     seeds = [42, 123, 456]  # 三个固定的随机种子
-    
+    num_nodes = [100, 200, 500, 800]
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [
         ('maze', True),      # 迷宫使用随机种子
@@ -416,20 +414,40 @@ def run_full_evaluation():
     print(f"开始运行 {total_tests} 个测试...")
     print(f"结果将保存到: {base_results_path}")
     
-    for env, use_seeds in test_configs:
-        print(f"\n{'='*50}")
-        print(f"测试环境: {env} (使用随机种子: {use_seeds})")
-        print(f"{'='*50}")
-        
-        for alg in algorithms:
-            if use_seeds:
-                # 使用多个种子测试
-                for seed in seeds:
+    for num_node in num_nodes:
+        for env, use_seeds in test_configs:
+            print(f"\n{'='*50}")
+            print(f"测试环境: {env} (使用随机种子: {use_seeds})")
+            print(f"{'='*50}")
+            
+            for alg in algorithms:
+                if use_seeds:
+                    # 使用多个种子测试
+                    for seed in seeds:
+                        current_test += 1
+                        print(f"\n进度: {current_test}/{total_tests}")
+                        
+                        try:
+                            metrics = run_algorithm_test(alg, env, seed, num_node, save_images=True)
+                            if metrics:
+                                all_metrics.append(metrics)
+                                
+                                # 保存单个结果
+                                metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
+                                save_metrics_to_file(metrics, metrics_file)
+                            
+                        except Exception as e:
+                            print(f"错误: {alg} on {env} (seed={seed}): {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                else:
+                    # 不使用随机种子，只测试一次
                     current_test += 1
                     print(f"\n进度: {current_test}/{total_tests}")
                     
                     try:
-                        metrics = run_algorithm_test(alg, env, seed, save_images=True)
+                        # 对于indoor环境，使用固定的种子42但不在文件名中体现
+                        metrics = run_algorithm_test(alg, env, 42, num_node, save_images=True)
                         if metrics:
                             all_metrics.append(metrics)
                             
@@ -438,28 +456,9 @@ def run_full_evaluation():
                             save_metrics_to_file(metrics, metrics_file)
                         
                     except Exception as e:
-                        print(f"错误: {alg} on {env} (seed={seed}): {str(e)}")
+                        print(f"错误: {alg} on {env}: {str(e)}")
                         import traceback
                         traceback.print_exc()
-            else:
-                # 不使用随机种子，只测试一次
-                current_test += 1
-                print(f"\n进度: {current_test}/{total_tests}")
-                
-                try:
-                    # 对于indoor环境，使用固定的种子42但不在文件名中体现
-                    metrics = run_algorithm_test(alg, env, 42, save_images=True)
-                    if metrics:
-                        all_metrics.append(metrics)
-                        
-                        # 保存单个结果
-                        metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
-                        save_metrics_to_file(metrics, metrics_file)
-                    
-                except Exception as e:
-                    print(f"错误: {alg} on {env}: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
     
     # 保存汇总结果
     summary_file = os.path.join(base_results_path, "evaluation_summary.json")
