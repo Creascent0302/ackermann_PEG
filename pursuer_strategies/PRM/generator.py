@@ -940,364 +940,154 @@ class UnionFind:
     """并查集，用于高效维护连通组件"""
     def __init__(self):
         self.parent = {}
-        self.rank = {}
         self.num_components = 0
     
     def make_set(self, x):
         if x not in self.parent:
             self.parent[x] = x
-            self.rank[x] = 0
             self.num_components += 1
     
     def find(self, x):
         if x not in self.parent:
-            return None
+            self.make_set(x)
+            return x
         if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])  # 路径压缩
+            self.parent[x] = self.find(self.parent[x])
         return self.parent[x]
     
     def union(self, x, y):
         root_x = self.find(x)
         root_y = self.find(y)
-        
-        if root_x is None or root_y is None or root_x == root_y:
-            return False
-        
-        # 按秩合并
-        if self.rank[root_x] < self.rank[root_y]:
-            self.parent[root_x] = root_y
-        elif self.rank[root_x] > self.rank[root_y]:
+        if root_x != root_y:
             self.parent[root_y] = root_x
-        else:
-            self.parent[root_y] = root_x
-            self.rank[root_x] += 1
-        
-        self.num_components -= 1
-        return True
-    
-    def connected(self, x, y):
-        return self.find(x) == self.find(y)
+            self.num_components -= 1
+            return True
+        return False
 
 class SPARS(BasePathPlanner):
-    """
-    优化的SPARS算法实现
-    基于论文: "Sparse Roadmap Spanners" by Dobson et al. (2013)
-    """
-    
-    def __init__(self, grid_width, grid_height, obstacles, 
-                 max_samples=5000, target_guards=500, 
-                 delta=0.8, stretch_factor=3.0, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, max_failures=200, visibility_radius = 1.0, stretch_factor = 3.0, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
-        
-        self.max_samples = max_samples
-        self.target_guards = target_guards
-        self.delta = delta  # 可见范围D
-        self.stretch_factor = stretch_factor
-        self.dense_radius = delta * 0.3  # 稠密图连接半径d
-        
-        # 数据结构
-        self.dense_nodes = []
-        self.dense_adj = defaultdict(set)
-        self.dense_kdtree = None
+        self.num_nodes = num_nodes
+        self.visibility_radius = visibility_radius
+        self.t_value = stretch_factor
+        self.max_failures = max_failures
+        self.dense_connection_radius = visibility_radius * 0.5 # 稠密图连接半径
         
         self.sparse_nodes = []
-        self.sparse_adj = defaultdict(set)  
-        self.sparse_kdtree = None
-        
-        # 索引和映射
-        self.sparse_node_to_idx = {}
-        self.representatives = {}  # dense_node -> sparse_node
-        self.guard_types = {}
-        self.components = UnionFind()
-        
-        # 优化参数
-        self.kdtree_rebuild_threshold = 100  # 提高阈值
-        self.nodes_since_rebuild = 0
-        self.batch_size = 10  # 批处理大小
-        
-        # 统计
-        self.stats = {
-            'coverage_guards': 0, 'connectivity_guards': 0,
-            'interface_guards': 0, 'quality_guards': 0,
-            'total_samples': 0, 'failed_samples': 0
-        }
-    
-    def _maybe_rebuild_kdtrees(self):
-        """优化的KDTree重建"""
-        if self.nodes_since_rebuild >= self.kdtree_rebuild_threshold:
-            if len(self.dense_nodes) > 10:
-                self.dense_kdtree = KDTree(np.array(self.dense_nodes))
-            if len(self.sparse_nodes) > 5:
-                self.sparse_kdtree = KDTree(np.array(self.sparse_nodes))
-                self.sparse_node_to_idx = {node: i for i, node in enumerate(self.sparse_nodes)}
-            self.nodes_since_rebuild = 0
-    
-    def _add_to_dense(self, q):
-        """优化的稠密图添加"""
-        self.dense_nodes.append(q)
-        self.nodes_since_rebuild += 1
-        
-        # 快速邻居查找
-        if self.dense_kdtree is not None and len(self.dense_nodes) > 1:
-            try:
-                indices = self.dense_kdtree.query_ball_point(q, self.dense_radius)
-                for idx in indices[:20]:  # 限制邻居数量
-                    if idx < len(self.dense_nodes) - 1:  # 排除自己
-                        neighbor = self.dense_nodes[idx]
-                        if self._distance(q, neighbor) <= self.dense_radius:
-                            if self._is_valid_edge(q, neighbor, num_samples=5):  # 减少采样
-                                self.dense_adj[q].add(neighbor)
-                                self.dense_adj[neighbor].add(q)
-            except:
-                # KDTree查询失败，重建
-                self.nodes_since_rebuild = self.kdtree_rebuild_threshold
-        else:
-            # 后备：线性搜索（限制数量）
-            for neighbor in self.dense_nodes[-20:]:
-                if neighbor != q and self._distance(q, neighbor) <= self.dense_radius:
-                    if self._is_valid_edge(q, neighbor, num_samples=5):
-                        self.dense_adj[q].add(neighbor)
-                        self.dense_adj[neighbor].add(q)
-    
-    def _add_sparse_guard(self, q, guard_type):
-        """添加稀疏守卫"""
-        if q in self.sparse_nodes:
-            return
-            
-        self.sparse_nodes.append(q)
-        self.guard_types[q] = guard_type
-        self.stats[f'{guard_type}_guards'] += 1
-        self.components.make_set(q)
-        self.nodes_since_rebuild += 1
-        
-        # 连接到邻居
-        self._connect_sparse_neighbors(q)
-    
-    def _connect_sparse_neighbors(self, q):
-        """优化的稀疏邻居连接"""
-        if not self.sparse_nodes:
-            return
-            
-        # 使用更小的搜索半径
-        search_radius = min(1.5 * self.delta, 2.0)
-        
-        if self.sparse_kdtree is not None and len(self.sparse_nodes) > 1:
-            try:
-                indices = self.sparse_kdtree.query_ball_point(q, search_radius)
-                for idx in indices[:15]:  # 限制连接数
-                    if idx < len(self.sparse_nodes) - 1:
-                        neighbor = self.sparse_nodes[idx]
-                        dist = self._distance(q, neighbor)
-                        if dist <= self.delta * 2 and neighbor not in self.sparse_adj[q]:
-                            if self._is_valid_edge(q, neighbor, num_samples=8):
-                                self.sparse_adj[q].add(neighbor)
-                                self.sparse_adj[neighbor].add(q)
-                                self.components.union(q, neighbor)
-            except:
-                self.nodes_since_rebuild = self.kdtree_rebuild_threshold
-        else:
-            # 后备方案
-            for neighbor in self.sparse_nodes[-15:]:
-                if neighbor != q:
-                    dist = self._distance(q, neighbor)
-                    if dist <= self.delta * 2:
-                        if self._is_valid_edge(q, neighbor, num_samples=8):
-                            self.sparse_adj[q].add(neighbor)
-                            self.sparse_adj[neighbor].add(q)
-                            self.components.union(q, neighbor)
-    
-    def _find_visible_guards(self, q):
-        """优化的可见守卫查找"""
-        if not self.sparse_nodes:
-            return []
-        
-        visible_guards = []
-        
-        if self.sparse_kdtree is not None and len(self.sparse_nodes) > 5:
-            try:
-                indices = self.sparse_kdtree.query_ball_point(q, self.delta * 1.1)
-                for idx in indices[:10]:  # 限制检查数量
-                    if idx < len(self.sparse_nodes):
-                        guard = self.sparse_nodes[idx]
-                        dist = self._distance(q, guard)
-                        if dist <= self.delta:
-                            if self._is_valid_edge(q, guard, num_samples=6):
-                                visible_guards.append(guard)
-            except:
-                self.nodes_since_rebuild = self.kdtree_rebuild_threshold
-        else:
-            # 后备方案
-            for guard in self.sparse_nodes[-10:]:
-                dist = self._distance(q, guard)
-                if dist <= self.delta:
-                    if self._is_valid_edge(q, guard, num_samples=6):
-                        visible_guards.append(guard)
-        
-        return visible_guards
-    
-    def _check_connectivity_guard(self, q, visible_guards):
-        """检查连通性守卫"""
-        if len(visible_guards) < 2:
-            return False
-        
-        # 检查是否连接不同组件
-        components_set = set()
-        for guard in visible_guards:
-            root = self.components.find(guard)
-            if root:
-                components_set.add(root)
-        
-        return len(components_set) >= 2
-    
-    def _check_interface_guard(self, q):
-        """简化的接口守卫检查"""
-        visible_guards = self._find_visible_guards(q)
-        if len(visible_guards) != 1:
-            return False, None
-        
-        main_guard = visible_guards[0]
-        
-        # 检查稠密邻居
-        dense_neighbors = list(self.dense_adj.get(q, set()))[:5]  # 限制检查数
-        for neighbor in dense_neighbors:
-            neighbor_guards = self._find_visible_guards(neighbor)
-            if len(neighbor_guards) == 1:
-                neighbor_guard = neighbor_guards[0]
-                if (neighbor_guard != main_guard and 
-                    neighbor_guard not in self.sparse_adj.get(main_guard, set())):
-                    return True, (main_guard, neighbor_guard)
-        
-        return False, None
-    
-    def _check_quality_guard(self, q):
-        """简化的质量守卫检查"""
-        visible_guards = self._find_visible_guards(q)
-        if len(visible_guards) < 1:
-            return False
-        
-        # 简化检查逻辑
-        dense_neighbors = list(self.dense_adj.get(q, set()))
-        if len(dense_neighbors) >= 3:
-            guard_count = set()
-            for neighbor in dense_neighbors[:3]:
-                n_guards = self._find_visible_guards(neighbor)
-                for guard in n_guards[:1]:  # 只取第一个
-                    guard_count.add(guard)
-            return len(guard_count) >= 2
-        
-        return False
-    
-    def generate_prm(self):
-        """优化的SPARS路径图生成"""
-        print(f"开始生成优化SPARS，目标：{self.target_guards}守卫")
-        start_time = time.time()
-        
-        consecutive_failures = 0
-        max_failures = 1500  # 减少最大失败次数
-        batch_count = 0
-        
-        while (self.stats['total_samples'] < self.max_samples and 
-               len(self.sparse_nodes) < self.target_guards and
-               consecutive_failures < max_failures):
-            
-            # 批处理重建KDTree
-            if batch_count % self.batch_size == 0:
-                self._maybe_rebuild_kdtrees()
-            
-            # 采样
-            q = self._random_sample()
-            if q is None:
-                consecutive_failures += 1
-                self.stats['failed_samples'] += 1
-                continue
-            
-            self.stats['total_samples'] += 1
-            batch_count += 1
-            
-            # 添加到稠密图
-            self._add_to_dense(q)
-            
-            # 寻找可见守卫
-            visible_guards = self._find_visible_guards(q)
-            
-            # 情况1: Coverage
-            if len(visible_guards) == 0:
-                self._add_sparse_guard(q, 'coverage')
-                self.representatives[q] = q
-                consecutive_failures = 0
-                continue
-            
-            # 情况2: Connectivity  
-            if self._check_connectivity_guard(q, visible_guards):
-                self._add_sparse_guard(q, 'connectivity')
-                # 连接到可见守卫
-                for guard in visible_guards:
-                    if guard not in self.sparse_adj[q]:
-                        self.sparse_adj[q].add(guard)
-                        self.sparse_adj[guard].add(q)
-                        self.components.union(q, guard)
-                self.representatives[q] = q
-                consecutive_failures = 0
-                continue
-            
-            # 分配最近代表
-            closest_guard = min(visible_guards, key=lambda g: self._distance(q, g))
-            self.representatives[q] = closest_guard
-            
-            # 情况3: Interface (简化版)
-            is_interface, interface_info = self._check_interface_guard(q)
-            if is_interface and interface_info:
-                guard1, guard2 = interface_info
-                self._add_sparse_guard(q, 'interface')
-                # 尝试直接连接两个守卫
-                if self._distance(guard1, guard2) <= 2 * self.delta:
-                    if self._is_valid_edge(guard1, guard2, num_samples=10):
-                        self.sparse_adj[guard1].add(guard2)
-                        self.sparse_adj[guard2].add(guard1)
-                        self.components.union(guard1, guard2)
-                self.representatives[q] = q
-                consecutive_failures = 0
-                continue
-            
-            # 情况4: Quality (简化版)
-            if self._check_quality_guard(q):
-                self._add_sparse_guard(q, 'quality')
-                # 连接到最近守卫
-                if closest_guard not in self.sparse_adj[q]:
-                    self.sparse_adj[q].add(closest_guard)
-                    self.sparse_adj[closest_guard].add(q)
-                    self.components.union(q, closest_guard)
-                self.representatives[q] = q
-                consecutive_failures = 0
-                continue
-            
-            consecutive_failures += 1
-        
-        # 构建边列表
-        edges = []
-        for node in self.sparse_nodes:
-            for neighbor in self.sparse_adj[node]:
-                if node < neighbor:
-                    edges.append((node, neighbor))
-        
-        self.nodes = self.sparse_nodes
-        self.edges = edges
-        
-        end_time = time.time()
-        self.stats['generation_time'] = end_time - start_time
-        self.stats['final_nodes'] = len(self.sparse_nodes)
-        self.stats['final_edges'] = len(edges)
-        
-        print(f"优化SPARS完成：{len(self.sparse_nodes)}守卫, {len(edges)}边, "
-              f"用时{self.stats['generation_time']:.2f}s")
-        print(f"守卫统计：C={self.stats['coverage_guards']}, "
-              f"N={self.stats['connectivity_guards']}, "
-              f"I={self.stats['interface_guards']}, "
-              f"Q={self.stats['quality_guards']}")
-        print(f"组件数：{self.components.num_components}")
-        
-        return self.nodes, self.edges, self.guard_types, self.stats
+        self.sparse_adj = defaultdict(dict)  # 稀疏图邻接表
+        self.components = UnionFind()  # 稀疏图连通分量管理器
+        self.dense_nodes = []
+        self.dense_adj = defaultdict(dict)   # 稠密图邻接表
 
+        self.representatives = {}  # 稠密图节点到稀疏图代表节点的映射
+
+    def _find_nearby_guards(self, node):
+        """在稀疏图中寻找距离node小于visibility_radius的最近节点"""
+        guards = []
+        for point in self.sparse_nodes:
+            dist = self._distance(node, point)
+            if dist <= self.visibility_radius and self._is_valid_edge(node, point):
+                guards.append(point)
+        return guards
+    
+    def add_sparse_node(self, node):
+        if node not in self.sparse_nodes:
+            self.sparse_nodes.append(node)
+            self.components.make_set(node)
+
+    def add_sparse_edge(self, u, v):
+        if u != v and v not in self.sparse_adj[u]:
+            dist = self._distance(u, v)
+            self.sparse_adj[u][v] = dist
+            self.sparse_adj[v][u] = dist
+            self.components.union(u, v)
+        
+    def generate_prm(self):
+        """主函数：生成SPARS路径图"""
+        print(f"开始生成SPARS路径图 (max_samples={self.num_nodes}, stretch_factor={self.t_value})")
+        failures = 0
+
+        for _ in range(self.num_nodes):
+            if failures >= self.max_failures:
+                print("达到最大失败次数，停止采样。")
+                break
+            sample = self._random_sample()
+            if sample is None:
+                continue
+            # 随机采样生成稠密图节点并和可达节点连接
+            self.dense_nodes.append(sample)
+            for node_d in self.dense_nodes[:-1]:
+                dist = self._distance(sample, node_d)
+                if dist <= self.dense_connection_radius and self._is_valid_edge(sample, node_d):
+                    self.dense_adj[sample][node_d] = dist
+                    self.dense_adj[node_d][sample] = dist
+            
+            guards = self._find_nearby_guards(sample)
+            # 情况一，没有可以连接的 guard ，说明增加了覆盖度，加到稀疏图中
+            if not guards:
+                self.add_sparse_node(sample)
+                self.representatives[sample] = sample
+                failures = 0
+                continue
+            else:
+                # 情况二，是否连接两个不连通区域，使用并查集判断
+                guard = min(guards, key=lambda g: self._distance(sample, g))
+                self.representatives[sample] = guard
+
+                visible_guards = {self.components.find(g) for g in guards}
+                if len(visible_guards) > 1:
+                    self.add_sparse_node(sample)
+                    for g in guards:
+                        self.add_sparse_edge(g, sample)
+                    failures = 0
+                    continue
+            
+                # 情况三，检查是否需要添加中间节点以确保接口连接
+                for point in self.dense_adj.get(sample, {}):
+                    # 检查临近节点的守卫节点
+                    if point not in self.representatives:
+                        continue
+                    rep_point = self.representatives[point]
+
+                    if guard == rep_point:
+                        continue
+                    else:
+                        if rep_point in self.sparse_adj.get(guard, {}):
+                            # 看看守卫节点和临近节点的守卫节点是否能直接相连，如果能直接相连那就说明没用
+                            continue
+                        else:
+                            if self._is_valid_edge(guard, rep_point):
+                                self.add_sparse_edge(guard, rep_point)
+                            else:
+                                midpoint = ((sample[0] + point[0]) / 2, (sample[1] + point[1]) / 2)
+                                if self._is_valid_edge(midpoint, guard) and self._is_valid_edge(midpoint, rep_point):
+                                    self.add_sparse_node(midpoint)
+                                    self.add_sparse_edge(midpoint, guard)
+                                    self.add_sparse_edge(midpoint, rep_point)
+                                else:
+                                    self.add_sparse_node(sample)
+                                    self.add_sparse_node(point)
+                                    self.add_sparse_edge(sample, guard)
+                                    self.add_sparse_edge(sample, point)
+                                    self.add_sparse_edge(point, rep_point)
+                                failures = 0 # 更新了稀疏图，失败计数置零
+                                break
+            failures += 1
+        print(f"SPARS生成完成！")
+        print(f"稀疏图节点数: {len(self.sparse_nodes)}")
+        print(f"稀疏图边数: {sum(len(v) for v in self.sparse_adj.values()) // 2}")
+        print(f"稠密图节点数: {len(self.dense_nodes)}")
+        print(f"稠密图边数: {sum(len(v) for v in self.dense_adj.values()) // 2}")
+        self.nodes = self.sparse_nodes
+        self.edges = []
+        for u in self.sparse_adj:
+            for v in self.sparse_adj[u]:
+                if (v, u) not in self.edges:
+                    self.edges.append((u, v))
+        return self.nodes, self.edges
+
+                    
+                                    
 
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    
@@ -1430,7 +1220,7 @@ class PRMRenderer:
 
 if __name__ == "__main__":
     # 示例使用
-    ENVIRONMENT_TYPE = "maze" # <-- 在这里切换环境！  
+    ENVIRONMENT_TYPE = "random" # <-- 在这里切换环境！  
     np.random.seed(42)  # 固定随机种子以获得可重复结果
     import random
     random.seed(42)
@@ -1475,10 +1265,10 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "classical" / "star" / "beam" / "spars" / "fmt" / "bit"
+    generator_name = "spars" # "classical" / "star" / "beam" / "spars"
 
     if generator_name == "classical":
-        prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=0.6)
+        prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=2.0)
         (nodes, edges) = prm_generator.generate_prm()
 
     elif generator_name == "star":
@@ -1506,7 +1296,7 @@ if __name__ == "__main__":
                                     min_connection_radius=0.4)
         elif ENVIRONMENT_TYPE == "indoor":
             prm_generator = BeamPRM(grid_width, grid_height, obstacles,
-                                    num_nodes=1000,
+                                    num_nodes=400,
                                     connection_radius=2,
                                     beam_angle_step_deg=25,
                                     beam_ray_step=0.2,
@@ -1528,9 +1318,9 @@ if __name__ == "__main__":
 
     elif generator_name == "spars":
         spars = SPARS(grid_width, grid_height, obstacles,
-                    max_samples=6000, target_guards=800,
+                    max_samples=6000, num_nodes=2000,
                     delta=connection_radius, stretch_factor=5)
-        (nodes, edges, guard_types, stats) = spars.generate_prm()
+        (nodes, edges) = spars.generate_prm()
 
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")

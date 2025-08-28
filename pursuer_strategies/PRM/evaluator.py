@@ -200,7 +200,7 @@ def save_metrics_to_file(metrics, filepath):
             metrics['connection_radius']
         ])
 
-def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_images=True):
+def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True):
     """运行单个算法测试"""
     np.random.seed(seed)
     import random
@@ -208,7 +208,11 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
     
     # 设置基础路径 - 修复路径
     base_results_path = "./pursuer_strategies/PRM/results"
-    
+    sample_nodes_map = {
+        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 500},
+        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 400},
+        'random': {'classical': 800, 'star': 800, 'beam': 300, 'spars': 800}
+    }
     # 设置环境参数
     if environment_type == "maze":
         ENV_CONFIG['gridnum_width'] = 49
@@ -225,8 +229,8 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
         connection_radius = 1.5
     elif environment_type == "random":
-        ENV_CONFIG['gridnum_width'] = 40
-        ENV_CONFIG['gridnum_height'] = 30
+        ENV_CONFIG['gridnum_width'] = 50
+        ENV_CONFIG['gridnum_height'] = 50
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         total_cells = grid_width * grid_height
@@ -242,7 +246,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
         raise ValueError(f"Unknown environment type: {environment_type}")
     
     print(f"\n运行测试: {algorithm_name} on {environment_type} (seed={seed})")
-    
+    num_nodes = sample_nodes_map.get(environment_type, {}).get(algorithm_name, 300)
     # 记录开始时间
     start_time = time.time()
     generator = None
@@ -343,9 +347,9 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
         # 生成文件名
         # 在run_algorithm_test函数中修改文件名生成逻辑
         if environment_type == 'indoor':
-            filename = f"{algorithm_name}_{environment_type}_{num_nodes}.pdf"
+            filename = f"{algorithm_name}_{environment_type}.pdf"
         else:
-            filename = f"{algorithm_name}_{environment_type}_{seed}_{num_nodes}.pdf"        
+            filename = f"{algorithm_name}_{environment_type}_{seed}.pdf"        
         filepath = os.path.join(env_dir, filename)
         
         # 使用generator.py中的PRMRenderer保存图像
@@ -363,7 +367,7 @@ def run_full_evaluation():
     """运行完整的评测流程"""
     algorithms = ['classical', 'star', 'beam', 'spars']
     seeds = [42, 123, 456]  # 三个固定的随机种子
-    num_nodes = [100, 200, 300, 500]
+    # num_nodes = [100, 200, 300, 500]
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [
         ('maze', True),      # 迷宫使用随机种子
@@ -377,9 +381,9 @@ def run_full_evaluation():
     total_tests = 0
     for env, use_seeds in test_configs:
         if use_seeds:
-            total_tests += len(algorithms) * len(seeds) * len(num_nodes)
+            total_tests += len(algorithms) * len(seeds)
         else:
-            total_tests += len(algorithms) * len(num_nodes)
+            total_tests += len(algorithms)
     
     current_test = 0
     base_results_path = "./pursuer_strategies/PRM/results"
@@ -403,40 +407,21 @@ def run_full_evaluation():
                 'dispersion', 'discrepancy', 'target_nodes', 'connection_radius'
             ])
     
-    for num_node in num_nodes:
-        for env, use_seeds in test_configs:
-            print(f"\n{'='*50}")
-            print(f"测试环境: {env} (使用随机种子: {use_seeds})")
-            print(f"{'='*50}")
-            
-            for alg in algorithms:
-                if use_seeds:
-                    # 使用多个种子测试
-                    for seed in seeds:
-                        current_test += 1
-                        print(f"\n进度: {current_test}/{total_tests}")
-                        
-                        try:
-                            metrics = run_algorithm_test(alg, env, seed, num_node, save_images=True)
-                            if metrics:
-                                all_metrics.append(metrics)
-                                
-                                # 保存单个结果
-                                metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
-                                save_metrics_to_file(metrics, metrics_file)
-                            
-                        except Exception as e:
-                            print(f"错误: {alg} on {env} (seed={seed}): {str(e)}")
-                            import traceback
-                            traceback.print_exc()
-                else:
-                    # 不使用随机种子，只测试一次
+    # for num_node in num_nodes:
+    for env, use_seeds in test_configs:
+        print(f"\n{'='*50}")
+        print(f"测试环境: {env} (使用随机种子: {use_seeds})")
+        print(f"{'='*50}")
+        
+        for alg in algorithms:
+            if use_seeds:
+                # 使用多个种子测试
+                for seed in seeds:
                     current_test += 1
                     print(f"\n进度: {current_test}/{total_tests}")
                     
                     try:
-                        # 对于indoor环境，使用固定的种子42但不在文件名中体现
-                        metrics = run_algorithm_test(alg, env, 42, num_node, save_images=True)
+                        metrics = run_algorithm_test(alg, env, seed, save_images=True)
                         if metrics:
                             all_metrics.append(metrics)
                             
@@ -445,9 +430,28 @@ def run_full_evaluation():
                             save_metrics_to_file(metrics, metrics_file)
                         
                     except Exception as e:
-                        print(f"错误: {alg} on {env}: {str(e)}")
+                        print(f"错误: {alg} on {env} (seed={seed}): {str(e)}")
                         import traceback
                         traceback.print_exc()
+            else:
+                # 不使用随机种子，只测试一次
+                current_test += 1
+                print(f"\n进度: {current_test}/{total_tests}")
+                
+                try:
+                    # 对于indoor环境，使用固定的种子42但不在文件名中体现
+                    metrics = run_algorithm_test(alg, env, 42, save_images=True)
+                    if metrics:
+                        all_metrics.append(metrics)
+                        
+                        # 保存单个结果
+                        metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
+                        save_metrics_to_file(metrics, metrics_file)
+                    
+                except Exception as e:
+                    print(f"错误: {alg} on {env}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
     
     # 保存汇总结果
     summary_file = os.path.join(base_results_path, "evaluation_summary.json")
