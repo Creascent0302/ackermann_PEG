@@ -60,22 +60,7 @@ def calculate_beam_connectivity_score(nodes, edges, obstacles, grid_width, grid_
         largest_comp_size = max(len(comp) for comp in components)
         connectivity_score = (largest_comp_size / len(nodes)) * 0.7  # 最高只能得70分
     
-    # 2. 节点效率评分 (25%权重)
-    total_cells = grid_width * grid_height
-    obstacle_cells = len(obstacles)
-    reachable_area = total_cells - obstacle_cells
-    
-    node_density = len(nodes) / max(reachable_area, 1)
-    if node_density <= 0.05:  # 每20个cell一个节点，很好
-        density_score = 1.0
-    elif node_density <= 0.1:  # 每10个cell一个节点，还行
-        density_score = 0.8
-    elif node_density <= 0.2:  # 每5个cell一个节点，偏密
-        density_score = 0.6
-    else:  # 太密集了
-        density_score = max(0.2, 1.0 - (node_density - 0.2) * 2)
-    
-    # 3. 拓扑复杂度评分 (20%权重)
+    # 2. 拓扑复杂度评分 (20%权重)
     total_degree = sum(len(adj[i]) for i in range(len(nodes)))
     avg_degree = total_degree / len(nodes) if len(nodes) > 0 else 0
     
@@ -115,9 +100,8 @@ def calculate_beam_connectivity_score(nodes, edges, obstacles, grid_width, grid_
     # 综合评分
     final_score = (
         0.40 * connectivity_score +
-        0.25 * density_score +
-        0.20 * topology_score +
-        0.15 * coverage_score
+        0.30 * topology_score +
+        0.30 * coverage_score
     )
     
     return min(final_score, 1.0)
@@ -210,6 +194,8 @@ def save_metrics_to_file(metrics, filepath):
             metrics['average_degree'],
             metrics['node_density'],
             metrics['edge_density'],
+            metrics['dispersion'],
+            metrics['discrepancy'],
             metrics['target_nodes'],
             metrics['connection_radius']
         ])
@@ -259,12 +245,11 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
     
     # 记录开始时间
     start_time = time.time()
-    
+    generator = None
     # 运行算法
     try:
         if algorithm_name == "classical":
-            generator = ClassicalPRM(grid_width, grid_height, obstacles, 
-                                    num_nodes=num_nodes, connection_radius=connection_radius)
+            generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
             nodes, edges = generator.generate_prm()
             medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
         
@@ -319,11 +304,11 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
     # 记录结束时间
     end_time = time.time()
     generation_time = end_time - start_time
-    
+    dispersion = generator.cal_dispersion() if generator else 0.0
+    discrepancy = generator.cal_discrepancy() if generator else 0.0
     # 计算连通性评分和额外指标
     beam_connectivity_score = calculate_beam_connectivity_score(nodes, edges, obstacles, grid_width, grid_height)
     additional_metrics = calculate_additional_metrics(nodes, edges, obstacles, grid_width, grid_height)
-    
     # 准备指标
     metrics = {
         'timestamp': datetime.now().isoformat(),
@@ -339,6 +324,8 @@ def run_algorithm_test(algorithm_name, environment_type, seed, num_nodes, save_i
         'average_degree': round(additional_metrics['average_degree'], 4),
         'node_density': round(additional_metrics['node_density'], 6),
         'edge_density': round(additional_metrics['edge_density'], 6),
+        'dispersion': round(dispersion, 4),
+        'discrepancy': round(discrepancy, 4),
         'target_nodes': num_nodes,
         'connection_radius': connection_radius
     }
@@ -376,7 +363,7 @@ def run_full_evaluation():
     """运行完整的评测流程"""
     algorithms = ['classical', 'star', 'beam', 'spars']
     seeds = [42, 123, 456]  # 三个固定的随机种子
-    num_nodes = [100, 200, 500, 800]
+    num_nodes = [100, 200, 300, 500]
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [
         ('maze', True),      # 迷宫使用随机种子
@@ -390,9 +377,9 @@ def run_full_evaluation():
     total_tests = 0
     for env, use_seeds in test_configs:
         if use_seeds:
-            total_tests += len(algorithms) * len(seeds)
+            total_tests += len(algorithms) * len(seeds) * len(num_nodes)
         else:
-            total_tests += len(algorithms)
+            total_tests += len(algorithms) * len(num_nodes)
     
     current_test = 0
     base_results_path = "./pursuer_strategies/PRM/results"
@@ -413,7 +400,7 @@ def run_full_evaluation():
                 'generation_time', 'nodes_count', 'edges_count',
                 'beam_connectivity_score', 'num_components', 'largest_component_ratio',
                 'average_degree', 'node_density', 'edge_density',
-                'target_nodes', 'connection_radius'
+                'dispersion', 'discrepancy', 'target_nodes', 'connection_radius'
             ])
     
     for num_node in num_nodes:

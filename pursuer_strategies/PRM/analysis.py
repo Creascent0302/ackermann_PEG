@@ -8,7 +8,7 @@ output_dir = "./pursuer_strategies/PRM/results/charts"
 os.makedirs(output_dir, exist_ok=True)
 
 # 要分析的指标
-metrics = ['generation_time', 'nodes_count', 'edges_count', 'beam_connectivity_score']
+metrics = ['generation_time', 'nodes_count', 'edges_count', 'beam_connectivity_score', 'dispersion', 'discrepancy']
 
 # 要处理的CSV文件列表
 files = [
@@ -22,7 +22,9 @@ metric_display = {
     'generation_time': 'Generation time(s)',
     'nodes_count': 'Number of nodes',
     'edges_count': 'Number of edges',
-    'beam_connectivity_score': 'Connectivity score'
+    'beam_connectivity_score': 'Connectivity score',
+    'dispersion': 'Dispersion score',
+    'discrepancy': 'Discrepancy score'
 }
 
 # 算法名称映射
@@ -40,19 +42,14 @@ colors = ['#E38691', '#F5C326', '#BACBA9', "#B7CAD9"]
 for file_path in files:
     # 从文件路径中提取环境名称
     env_name = os.path.basename(file_path).split('_')[1].split('.')[0]
-    
-    # 读取CSV文件
     df = pd.read_csv(file_path)
     
-    # 检查文件是否为空
     if df.empty:
         print(f"警告: {file_path} 为空，跳过")
         continue
     
     # 获取不同的target_nodes值（采样次数）
     target_nodes = sorted(df['target_nodes'].unique())
-    
-    # 检查是否存在采样数据
     if len(target_nodes) == 0:
         print(f"警告: {file_path} 中没有找到任何采样数据，跳过")
         continue
