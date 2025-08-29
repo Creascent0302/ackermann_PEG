@@ -1072,6 +1072,7 @@ class SPARS(BasePathPlanner):
                                     self.add_sparse_edge(point, rep_point)
                                 failures = 0 # 更新了稀疏图，失败计数置零
                                 break
+                # 感觉原论文的情况四的伪代码有问题，前三种情况已经覆盖第四种情况，因此没有实现
             failures += 1
         print(f"SPARS生成完成！")
         print(f"稀疏图节点数: {len(self.sparse_nodes)}")
@@ -1247,7 +1248,7 @@ if __name__ == "__main__":
     
     elif ENVIRONMENT_TYPE == "random":  
         # 原始的随机环境  
-        ENV_CONFIG['gridnum_width'] = 40  
+        ENV_CONFIG['gridnum_width'] = 30  
         ENV_CONFIG['gridnum_height'] = 30  
         grid_width = ENV_CONFIG['gridnum_width']  
         grid_height = ENV_CONFIG['gridnum_height']  
@@ -1265,14 +1266,14 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "classical" / "star" / "beam" / "spars"
+    generator_name = "beam" # "classical" / "star" / "beam" / "spars"
 
     if generator_name == "classical":
         prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=2.0)
         (nodes, edges) = prm_generator.generate_prm()
 
     elif generator_name == "star":
-        prm_generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=1000, connection_radius=1)
+        prm_generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=1)
         (nodes, edges) = prm_generator.generate_prm()
 
     elif generator_name == "beam":
@@ -1318,7 +1319,7 @@ if __name__ == "__main__":
 
     elif generator_name == "spars":
         spars = SPARS(grid_width, grid_height, obstacles,
-                    max_samples=6000, num_nodes=2000,
+                    max_samples=6000, num_nodes=1000,
                     delta=connection_radius, stretch_factor=5)
         (nodes, edges) = spars.generate_prm()
 

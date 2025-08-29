@@ -8,7 +8,7 @@ output_dir = "./pursuer_strategies/PRM/results/charts"
 os.makedirs(output_dir, exist_ok=True)
 
 # 要分析的指标
-metrics = ['generation_time', 'nodes_count', 'edges_count', 'beam_connectivity_score', 'dispersion', 'discrepancy']
+metrics = ['generation_time', 'nodes_count', 'edges_count', 'dispersion', 'discrepancy']
 
 # 要处理的CSV文件列表
 files = [
@@ -22,7 +22,6 @@ metric_display = {
     'generation_time': 'Generation time(s)',
     'nodes_count': 'Number of nodes',
     'edges_count': 'Number of edges',
-    'beam_connectivity_score': 'Connectivity score',
     'dispersion': 'Dispersion score',
     'discrepancy': 'Discrepancy score'
 }
@@ -48,90 +47,74 @@ for file_path in files:
         print(f"警告: {file_path} 为空，跳过")
         continue
     
-    # 获取不同的target_nodes值（采样次数）
-    target_nodes = sorted(df['target_nodes'].unique())
-    if len(target_nodes) == 0:
-        print(f"警告: {file_path} 中没有找到任何采样数据，跳过")
-        continue
-    
-    print(f"处理 {env_name} 环境, 检测到的采样数量: {target_nodes}")
+    print(f"处理 {env_name} 环境")
     
     # 获取所有算法
     algorithms = ['classical', 'star', 'beam', 'spars']
     
-    # 为每个指标创建一个柱状图
+    # 环境显示名称
+    env_display = {"indoor": "Indoor", "random": "Random", "maze": "Maze"}
+    
+    # 为每个指标创建一个横向柱状图
     for metric in metrics:
         plt.figure(figsize=(10, 6))
         
-        # 设置条形图的宽度和位置
-        bar_width = 0.2
-        x = np.arange(len(target_nodes))
-        
-        # 为每种算法绘制条形
-        for i, algorithm in enumerate(algorithms):
-            # 收集该算法在不同target_nodes下的指标值
-            values = []
-            for node in target_nodes:
-                # 计算该算法在特定target_nodes下所有随机种子的平均指标值
-                subset = df[(df['target_nodes'] == node) & (df['algorithm'] == algorithm)]
-                
-                if not subset.empty:
-                    # 对于每个algorithm-node组合，可能有多个随机种子，我们计算所有随机种子的平均值
-                    avg_value = subset[metric].mean()
-                    values.append(avg_value)
-                    print(f"  {env_name}, {algorithm}, target_nodes={node}, {metric}平均值: {avg_value:.4f} (来自{len(subset)}个样本)")
-                else:
-                    print(f"  警告: {env_name}, {algorithm}, target_nodes={node} 没有数据")
-                    values.append(0)
+        # 计算每个算法的平均指标值
+        values = []
+        for algorithm in algorithms:
+            # 筛选该算法的所有数据
+            subset = df[df['algorithm'] == algorithm]
             
-            # 绘制条形
-            plt.bar(x + i*bar_width, values, bar_width, 
-                    label=algorithm_display[algorithm], 
-                    color=colors[i],
-                    edgecolor='none')  # 移除边框
+            if not subset.empty:
+                # 计算平均值
+                avg_value = subset[metric].mean()
+                values.append(avg_value)
+                print(f"  {env_name}, {algorithm}, {metric}平均值: {avg_value:.4f} (来自{len(subset)}个样本)")
+            else:
+                print(f"  警告: {env_name}, {algorithm} 没有数据")
+                values.append(0)
         
-        # 添加数值标签（所有指标）
-        for i, algorithm in enumerate(algorithms):
-            values = []
-            for node in target_nodes:
-                subset = df[(df['target_nodes'] == node) & (df['algorithm'] == algorithm)]
-                if not subset.empty:
-                    values.append(subset[metric].mean())
-                else:
-                    values.append(0)
-            
-            for j, v in enumerate(values):
-                if v > 0:  # 只标注非零值
-                    if metric == 'generation_time':
-                        # 时间值保留2位小数
-                        plt.text(x[j] + i*bar_width, v + 0.1, f"{v:.2f}", 
-                                ha='center', va='bottom', fontsize=8, rotation=0)
-                    elif metric == 'beam_connectivity_score':
-                        # 评分保留2位小数
-                        plt.text(x[j] + i*bar_width, v + 0.01, f"{v:.2f}", 
-                                ha='center', va='bottom', fontsize=8, rotation=0)
-                    elif metric in ['nodes_count', 'edges_count']:
-                        plt.text(x[j] + i*bar_width, v + v*0.03, f"{int(v)}", 
-                                ha='center', va='bottom', fontsize=8, rotation=0)
+        # 设置y轴位置
+        y_pos = np.arange(len(algorithms))
+        
+        # 绘制横向条形图
+        bars = plt.barh(y_pos, values, color=colors[:len(algorithms)])
+        
+        # 设置x轴范围，根据指标值稍微扩展一些
+        x_max = max(values) * 1.2  # 扩展20%的空间用于显示标签
+        plt.xlim(0, x_max)
+        
+        # 添加数值标签
+        for i, v in enumerate(values):
+            if v > 0:  # 只标注非零值
+                label_offset = x_max * 0.01  # 根据x轴范围调整标签偏移
+                if metric == 'generation_time':
+                    # 时间值保留2位小数
+                    plt.text(v + label_offset, i, f"{v:.2f}", 
+                            va='center', fontsize=9)
+                elif metric in ['dispersion', 'discrepancy']:
+                    # 评分保留4位小数
+                    plt.text(v + label_offset, i, f"{v:.4f}", 
+                            va='center', fontsize=9)
+                elif metric in ['nodes_count', 'edges_count']:
+                    plt.text(v + label_offset, i, f"{int(v)}", 
+                            va='center', fontsize=9)
         
         # 设置图表标题和标签
-        env_display = {"indoor": "Indoor", "random": "Random", "maze": "Maze"}
         plt.title(f'{env_display.get(env_name, env_name)} - {metric_display[metric]}', fontsize=14)
-        plt.xlabel('Number of samples', fontsize=12)
-        plt.ylabel(metric_display[metric], fontsize=12)
+        plt.xlabel(metric_display[metric], fontsize=12)
         
-        # 设置x轴刻度
-        plt.xticks(x + bar_width*1.5, target_nodes)
-        
-        # 添加图例
-        plt.legend(loc='best')
+        # 设置y轴刻度
+        plt.yticks(y_pos, [algorithm_display[alg] for alg in algorithms])
         
         # 添加网格线便于阅读
-        plt.grid(axis='y', linestyle=':', alpha=0.7)
+        plt.grid(axis='x', linestyle=':', alpha=0.7)
+        
         # 去除上边框和右边框
         ax = plt.gca()  # 获取当前坐标轴
         ax.spines['top'].set_visible(False)  # 隐藏上边框
         ax.spines['right'].set_visible(False)  # 隐藏右边框
+        
         # 调整布局
         plt.tight_layout()
         

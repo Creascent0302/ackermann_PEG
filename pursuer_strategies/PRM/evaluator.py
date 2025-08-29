@@ -11,166 +11,6 @@ from config import ENV_CONFIG
 from generator import *
 from map_generator import generate_maze_obstacles, generate_indoor_obstacles
 
-def calculate_beam_connectivity_score(nodes, edges, obstacles, grid_width, grid_height):
-    """
-    专门为Beam算法设计的连通性评分
-    重点评估: 拓扑完整性、节点精简性、覆盖度
-    """
-    if not nodes or not edges:
-        return 0.0
-    
-    # 1. 连通分量分析 (40%权重)
-    adj = {i: [] for i in range(len(nodes))}
-    node_to_idx = {node: i for i, node in enumerate(nodes)}
-    
-    for edge in edges:
-        if edge[0] in node_to_idx and edge[1] in node_to_idx:
-            i, j = node_to_idx[edge[0]], node_to_idx[edge[1]]
-            adj[i].append(j)
-            adj[j].append(i)
-    
-    # 找连通分量
-    visited = [False] * len(nodes)
-    components = []
-    
-    def bfs(start):
-        queue = [start]
-        visited[start] = True
-        component = [start]
-        while queue:
-            node = queue.pop(0)
-            for neighbor in adj[node]:
-                if not visited[neighbor]:
-                    visited[neighbor] = True
-                    queue.append(neighbor)
-                    component.append(neighbor)
-        return component
-    
-    for i in range(len(nodes)):
-        if not visited[i]:
-            components.append(bfs(i))
-    
-    # 连通性评分: 严重惩罚多个连通分量
-    if len(components) == 0:
-        connectivity_score = 0.0
-    elif len(components) == 1:
-        connectivity_score = 1.0  # 完全连通
-    else:
-        # 有离群节点，按最大连通分量比例评分，但有惩罚
-        largest_comp_size = max(len(comp) for comp in components)
-        connectivity_score = (largest_comp_size / len(nodes)) * 0.7  # 最高只能得70分
-    
-    # 2. 拓扑复杂度评分 (20%权重)
-    total_degree = sum(len(adj[i]) for i in range(len(nodes)))
-    avg_degree = total_degree / len(nodes) if len(nodes) > 0 else 0
-    
-    if 2.5 <= avg_degree <= 4.0:
-        topology_score = 1.0
-    elif 2.0 <= avg_degree < 2.5:
-        topology_score = 0.8
-    elif 4.0 < avg_degree <= 6.0:
-        topology_score = 0.7
-    else:
-        topology_score = max(0.3, 1.0 - abs(avg_degree - 3.25) * 0.2)
-    
-    # 4. 覆盖均匀性评分 (15%权重)
-    if len(nodes) < 3:
-        coverage_score = 0.5
-    else:
-        distances = []
-        for i, node1 in enumerate(nodes):
-            min_dist = float('inf')
-            for j, node2 in enumerate(nodes):
-                if i != j:
-                    dist = ((node1[0] - node2[0])**2 + (node1[1] - node2[1])**2)**0.5
-                    min_dist = min(min_dist, dist)
-            distances.append(min_dist)
-        
-        if distances:
-            mean_dist = sum(distances) / len(distances)
-            if mean_dist > 0:
-                variance = sum((d - mean_dist)**2 for d in distances) / len(distances)
-                cv = (variance**0.5) / mean_dist
-                coverage_score = max(0.2, 1.0 - cv)
-            else:
-                coverage_score = 0.2
-        else:
-            coverage_score = 0.5
-    
-    # 综合评分
-    final_score = (
-        0.40 * connectivity_score +
-        0.30 * topology_score +
-        0.30 * coverage_score
-    )
-    
-    return min(final_score, 1.0)
-
-def calculate_additional_metrics(nodes, edges, obstacles, grid_width, grid_height):
-    """计算额外的评估指标"""
-    if not nodes:
-        return {
-            'num_components': 0,
-            'largest_component_ratio': 0,
-            'average_degree': 0,
-            'node_density': 0,
-            'edge_density': 0
-        }
-    
-    # 连通分量分析
-    adj = {i: [] for i in range(len(nodes))}
-    node_to_idx = {node: i for i, node in enumerate(nodes)}
-    
-    for edge in edges:
-        if edge[0] in node_to_idx and edge[1] in node_to_idx:
-            i, j = node_to_idx[edge[0]], node_to_idx[edge[1]]
-            adj[i].append(j)
-            adj[j].append(i)
-    
-    # 找连通分量
-    visited = [False] * len(nodes)
-    components = []
-    
-    def bfs(start):
-        queue = [start]
-        visited[start] = True
-        component = [start]
-        while queue:
-            node = queue.pop(0)
-            for neighbor in adj[node]:
-                if not visited[neighbor]:
-                    visited[neighbor] = True
-                    queue.append(neighbor)
-                    component.append(neighbor)
-        return component
-    
-    for i in range(len(nodes)):
-        if not visited[i]:
-            components.append(bfs(i))
-    
-    metrics = {}
-    metrics['num_components'] = len(components)
-    if components:
-        largest_comp_size = max(len(comp) for comp in components)
-        metrics['largest_component_ratio'] = largest_comp_size / len(nodes)
-    else:
-        metrics['largest_component_ratio'] = 0
-    
-    # 度数统计
-    total_degree = sum(len(adj[i]) for i in range(len(nodes)))
-    metrics['average_degree'] = total_degree / len(nodes) if len(nodes) > 0 else 0
-    
-    # 密度统计
-    total_cells = grid_width * grid_height
-    obstacle_cells = len(obstacles)
-    reachable_area = total_cells - obstacle_cells
-    metrics['node_density'] = len(nodes) / max(reachable_area, 1)
-    
-    max_possible_edges = len(nodes) * (len(nodes) - 1) / 2
-    metrics['edge_density'] = len(edges) / max(max_possible_edges, 1)
-    
-    return metrics
-
 def save_metrics_to_file(metrics, filepath):
     """保存指标到文件"""
     # 确保目录存在
@@ -188,15 +28,8 @@ def save_metrics_to_file(metrics, filepath):
             metrics['generation_time'],
             metrics['nodes_count'],
             metrics['edges_count'],
-            metrics['beam_connectivity_score'],
-            metrics['num_components'],
-            metrics['largest_component_ratio'],
-            metrics['average_degree'],
-            metrics['node_density'],
-            metrics['edge_density'],
             metrics['dispersion'],
             metrics['discrepancy'],
-            metrics['target_nodes'],
             metrics['connection_radius']
         ])
 
@@ -208,10 +41,11 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     
     # 设置基础路径 - 修复路径
     base_results_path = "./pursuer_strategies/PRM/results"
+    # 每种环境和算法的采样节点数
     sample_nodes_map = {
-        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 500},
-        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 400},
-        'random': {'classical': 800, 'star': 800, 'beam': 300, 'spars': 800}
+        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 1500},
+        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 1800},
+        'random': {'classical': 400, 'star': 400, 'beam': 300, 'spars': 1000}
     }
     # 设置环境参数
     if environment_type == "maze":
@@ -229,8 +63,8 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
         connection_radius = 1.5
     elif environment_type == "random":
-        ENV_CONFIG['gridnum_width'] = 50
-        ENV_CONFIG['gridnum_height'] = 50
+        ENV_CONFIG['gridnum_width'] = 30
+        ENV_CONFIG['gridnum_height'] = 30
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         total_cells = grid_width * grid_height
@@ -289,8 +123,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         
         elif algorithm_name == "spars":
             generator = SPARS(grid_width, grid_height, obstacles,
-                             max_samples=6000, target_guards=num_nodes,
-                             delta=connection_radius, stretch_factor=1.3)
+                             num_nodes=num_nodes)
             result = generator.generate_prm()
             if len(result) >= 2:
                 nodes, edges = result[:2]
@@ -310,9 +143,6 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     generation_time = end_time - start_time
     dispersion = generator.cal_dispersion() if generator else 0.0
     discrepancy = generator.cal_discrepancy() if generator else 0.0
-    # 计算连通性评分和额外指标
-    beam_connectivity_score = calculate_beam_connectivity_score(nodes, edges, obstacles, grid_width, grid_height)
-    additional_metrics = calculate_additional_metrics(nodes, edges, obstacles, grid_width, grid_height)
     # 准备指标
     metrics = {
         'timestamp': datetime.now().isoformat(),
@@ -322,21 +152,13 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         'generation_time': round(generation_time, 4),
         'nodes_count': len(nodes),
         'edges_count': len(edges),
-        'beam_connectivity_score': round(beam_connectivity_score, 4),
-        'num_components': additional_metrics['num_components'],
-        'largest_component_ratio': round(additional_metrics['largest_component_ratio'], 4),
-        'average_degree': round(additional_metrics['average_degree'], 4),
-        'node_density': round(additional_metrics['node_density'], 6),
-        'edge_density': round(additional_metrics['edge_density'], 6),
         'dispersion': round(dispersion, 4),
         'discrepancy': round(discrepancy, 4),
-        'target_nodes': num_nodes,
         'connection_radius': connection_radius
     }
     
     print(f"完成: {len(nodes)} 节点, {len(edges)} 边, "
-          f"连通分量: {additional_metrics['num_components']}, "
-          f"Beam评分: {beam_connectivity_score:.3f}, 时间: {generation_time:.2f}s")
+          f" 时间: {generation_time:.2f}s")
     
     # 保存图像 - 使用generator.py中的PRMRenderer
     if save_images:
@@ -402,9 +224,7 @@ def run_full_evaluation():
             writer.writerow([
                 'timestamp', 'algorithm', 'environment', 'seed',
                 'generation_time', 'nodes_count', 'edges_count',
-                'beam_connectivity_score', 'num_components', 'largest_component_ratio',
-                'average_degree', 'node_density', 'edge_density',
-                'dispersion', 'discrepancy', 'target_nodes', 'connection_radius'
+                'dispersion', 'discrepancy', 'connection_radius'
             ])
     
     # for num_node in num_nodes:
@@ -471,19 +291,7 @@ def run_full_evaluation():
     print(f"\n总计测试: {len(all_metrics)} 个")
     successful_tests = [m for m in all_metrics if m.get('nodes_count', 0) > 0]
     print(f"成功测试: {len(successful_tests)} 个")
-    
-    if successful_tests:
-        # 按算法统计Beam评分
-        print(f"\nBeam连通性评分统计:")
-        from collections import defaultdict
-        algo_scores = defaultdict(list)
-        for m in successful_tests:
-            algo_scores[m['algorithm']].append(m['beam_connectivity_score'])
         
-        for algo, scores in algo_scores.items():
-            avg_score = sum(scores) / len(scores)
-            print(f"  {algo}: {avg_score:.4f} (测试数: {len(scores)})")
-    
     return all_metrics
 
 if __name__ == "__main__":
