@@ -83,7 +83,7 @@ class PathPRMRenderer(PRMRenderer):
         screen = self.render_path(nodes, edges, obstacles, path_nodes, path_edges,
                                  medial_axis_nodes, medial_axis_edges, medial_axis_paths)
         save_pdf_image(screen, filepath)
-        print(f"路径图像已保存到: {filepath}")
+        # print(f"路径图像已保存到: {filepath}")
     
     def run_with_path(self, nodes, edges, obstacles, path_nodes, path_edges,
                  medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
@@ -175,9 +175,9 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     
     # 设置算法参数
     sample_nodes_map = {
-        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 1500},
-        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 1800},
-        'random': {'classical': 400, 'star': 400, 'beam': 300, 'spars': 1000}
+        'maze': {'delta': 1000, 'star': 1000, 'beam': 300, 'spars': 1800},
+        'indoor': {'delta': 1000, 'star': 1000, 'beam': 300, 'spars': 1800},
+        'random': {'delta': 1000, 'star': 800, 'beam': 300, 'spars': 1000}
     }
     
     print(f"\n运行路径规划测试: {algorithm_name} on {environment_type} (seed={seed})")
@@ -185,16 +185,16 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     
     # 初始化PRM生成器
     generator = None
-    if algorithm_name == "classical":
-        generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
-    elif algorithm_name == "star":
-        generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
+    if algorithm_name == "delta":
+        generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
+    # elif algorithm_name == "star":
+    #     generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
     elif algorithm_name == "beam":
         if environment_type == "random":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.2,
-                               beam_angle_step_deg=3, beam_ray_step=0.08,
-                               min_connection_radius=0.3)
+                               beam_angle_step_deg=2, beam_ray_step=0.08,
+                               min_connection_radius=0.25)
         elif environment_type == "maze":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.5,
@@ -227,6 +227,8 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     prm_gen_time = time.time() - start_time
     print(f"PRM生成完成，用时: {prm_gen_time:.2f}秒")
     
+    np.random.seed(seed)
+    random.seed(seed) # 确保路径测试的一致性
     # 生成测试点对
     print(f"生成 {num_path_tests} 个起终点对...")
     point_pairs = generator.generate_valid_point_pairs(num_path_tests)
@@ -235,14 +237,14 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     path_metrics = []
     
     for i, (start, goal) in enumerate(point_pairs):
-        print(f"测试路径 {i+1}/{num_path_tests}: {start} -> {goal}")
+        # print(f"测试路径 {i+1}/{num_path_tests}: {start} -> {goal}")
         
         # 测量路径搜索时间和结果
         path_nodes, path_edges, path_length, search_time = generator.find_path(start, goal)
         
         success = path_nodes is not None
         status = "成功" if success else "失败"
-        print(f"  路径搜索{status}，长度: {path_length if success else 'N/A'}，用时: {search_time:.4f}秒")
+        # print(f"  路径搜索{status}，长度: {path_length if success else 'N/A'}，用时: {search_time:.4f}秒")
         
         # 记录指标
         metrics = {
@@ -320,8 +322,9 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
 
 def run_full_path_evaluation(num_path_tests=10):
     """运行完整的路径规划评测流程"""
-    algorithms = ['classical', 'star', 'beam', 'spars']
-    seeds = [42, 123, 456]  # 三个固定的随机种子
+    # algorithms = ['delta', 'star', 'beam', 'spars']
+    algorithms = ['delta', 'beam', 'spars']
+    seeds = [42, 114, 520]  # 三个固定的随机种子
     
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [
@@ -474,24 +477,24 @@ def demo_path_planning(algorithm_name="beam", environment_type="maze", seed=42, 
     
     # 选择算法并设置参数
     sample_nodes_map = {
-        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 1500},
-        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 1800},
-        'random': {'classical': 400, 'star': 400, 'beam': 300, 'spars': 1000}
+        'maze': {'delta': 1500, 'star': 1500, 'beam': 300, 'spars': 1500},
+        'indoor': {'delta': 1500, 'star': 1500, 'beam': 300, 'spars': 1800},
+        'random': {'delta': 1200, 'star': 1200, 'beam': 300, 'spars': 1000}
     }
     num_nodes = sample_nodes_map.get(environment_type, {}).get(algorithm_name, 300)
     
     # 初始化PRM生成器
     generator = None
-    if algorithm_name == "classical":
-        generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
+    if algorithm_name == "delta":
+        generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
     elif algorithm_name == "star":
         generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
     elif algorithm_name == "beam":
         if environment_type == "random":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.2,
-                               beam_angle_step_deg=3, beam_ray_step=0.08,
-                               min_connection_radius=0.3)
+                               beam_angle_step_deg=2, beam_ray_step=0.08,
+                               min_connection_radius=0.25)
         elif environment_type == "maze":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.5,
@@ -555,10 +558,10 @@ if __name__ == "__main__":
     # 您可以选择运行完整评测或者演示单个路径规划
     
     # 选项1: 运行完整评测 (测试所有算法在所有环境下的性能)
-    # run_full_path_evaluation(num_path_tests=10)
+    run_full_path_evaluation(num_path_tests=50)
     
     # 选项2: 演示单个路径规划 (交互式查看结果)
-    demo_path_planning(algorithm_name="beam", environment_type="maze", seed=42, interactive=True)
+    # demo_path_planning(algorithm_name="beam", environment_type="maze", seed=42, interactive=True)
 
     # 选项3: 测试单个算法在单个环境下的路径规划能力
     # test_path_planning("beam", "maze", 42, num_path_tests=5)

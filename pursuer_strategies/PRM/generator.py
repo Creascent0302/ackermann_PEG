@@ -784,7 +784,7 @@ class BeamPRM(BasePathPlanner):
         """
         if not path_nodes or len(path_nodes) < 3:
             return path_nodes
-        for _ in range(5):
+        for _ in range(7):
             for i in range(len(path_nodes) - 2):
                 current = path_nodes[i]
                 next = path_nodes[i + 1]
@@ -850,6 +850,8 @@ class BeamPRM(BasePathPlanner):
                     for m in self.medial_axis_all_nodes:
                         if self._is_valid_edge(node, m):
                             dist = self._distance(node, m)
+                            if node not in adjacency:
+                                adjacency[node] = {}
                             adjacency[node][m] = dist
                             adjacency[m][node] = dist
                             node_connected = True
@@ -867,6 +869,8 @@ class BeamPRM(BasePathPlanner):
                     for m in self.medial_axis_all_nodes:
                         if self._is_valid_edge(node, m):
                             dist = self._distance(node, m)
+                            if node not in adjacency:
+                                adjacency[node] = {}
                             adjacency[node][m] = dist
                             adjacency[m][node] = dist
                             node_connected = True
@@ -924,94 +928,189 @@ class BeamPRM(BasePathPlanner):
         return None, None, None, time.time() - start_time
 
 
-class ClassicalPRM(BasePathPlanner):
-    """经典概率路径图算法"""
+class DeltaPRM(BasePathPlanner):
+    """
+    delta-PRM算法
+    使用最小距离阈值(delta)来确保采样点不会过于密集
+    使用最大连接半径来限制边的连接距离
+    """
 
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, connection_radius=0.8, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, 
+                 num_nodes=500, 
+                 delta_radius=0.15,         # 最小连接距离
+                 connection_radius=1.6,     # 最大连接距离
+                 max_consecutive_failures=30,  # 最大连续失败次数
+                 **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
-        self.connection_radius = connection_radius
-    
-    def _find_k_nearest_neighbors(self, node, k=10):
-        """找到节点的k个最近邻居"""
-        if len(self.nodes) <= 1:
-            return []
-        
-        distances = [(self._distance(node, other), other)
-                    for other in self.nodes if other != node]
-        distances.sort()
-    
-        return [neighbor for _, neighbor in distances[:min(k, len(distances))]]
+        self.delta_radius = delta_radius  # 最小距离阈值
+        self.connection_radius = connection_radius  # 最大连接半径
+        self.max_consecutive_failures = max_consecutive_failures
+        self.node_kdtree = None  # 用于快速查找近邻节点
 
-    def _find_radius_neighbors(self, node):
-        """找到连接半径内的所有邻居节点"""
-        neighbors = []
-        for other in self.nodes:
-            if other != node and self._distance(node, other) <= self.connection_radius:
-                neighbors.append(other)
-        return neighbors
+    def _is_delta_valid(self, node):
+        """
+        检查节点是否满足delta条件
+        如果node距离任何现有节点小于delta_radius，则返回False
+        """
+        if not self.nodes:
+            return True
+            
+        # 如果已经构建了KD树，使用它来加速查询
+        if self.node_kdtree is not None:
+            dist, _ = self.node_kdtree.query(np.array(node))
+            return dist >= self.delta_radius
+        
+        # 否则使用暴力搜索
+        for existing_node in self.nodes:
+            if self._distance(node, existing_node) < self.delta_radius:
+                return False
+        return True
+    
+    def _update_kdtree(self):
+        """更新KD树以加速邻近搜索"""
+        if len(self.nodes) > 10:  # 当节点数量足够时才构建KD树
+            self.node_kdtree = KDTree(np.array(self.nodes))
+        else:
+            self.node_kdtree = None
+            
+    def _find_connections(self, node):
+        """为节点寻找连接半径内的有效连接"""
+        connections = []
+        
+        # 使用KD树加速搜索，如果可用
+        if self.node_kdtree is not None:
+            indices = self.node_kdtree.query_ball_point(
+                np.array(node), self.connection_radius
+            )
+            for i in indices:
+                neighbor = self.nodes[i]
+                if neighbor != node and self._is_valid_edge(node, neighbor):
+                    connections.append(neighbor)
+        else:
+            # 暴力搜索
+            for neighbor in self.nodes:
+                if neighbor != node and self._distance(node, neighbor) <= self.connection_radius:
+                    if self._is_valid_edge(node, neighbor):
+                        connections.append(neighbor)
+                        
+        return connections
 
     def generate_prm(self):
-        """生成经典PRM路径图"""
-        print("开始生成Classical PRM...")
+        """生成delta-PRM路径图"""
+        print("开始生成delta-PRM...")
         start_time = time.time()
     
         self.nodes = []
         self.edges = []
+        self.node_kdtree = None
     
-        # 第一阶段：采样节点
-        print(f"采样 {self.num_nodes} 个节点...")
-        sampled = 0
-        attempts = 0
-        max_attempts = self.num_nodes * 10
-    
-        while sampled < self.num_nodes and attempts < max_attempts:
-            attempts += 1
+        print(f"目标采样: {self.num_nodes} 个节点...")
+        sampled_count = 0
+        consecutive_failures = 0
+        total_attempts = 0
+        
+        # 主循环：直到达到目标节点数或连续失败次数过多
+        while sampled_count < self.num_nodes and consecutive_failures < self.max_consecutive_failures:
+            total_attempts += 1
+            
+            # 1. 随机采样一个点
             sample = self._random_sample()
-            if sample is not None:
-                self.nodes.append(sample)
-                sampled += 1
-                if sampled % 50 == 0:
-                    print(f"已采样 {sampled}/{self.num_nodes} 节点")
-    
-        print(f"实际采样到 {len(self.nodes)} 个有效节点")
-    
-        # 第二阶段：连接节点
-        print("连接节点...")
-        edge_attempts = 0
-        successful_edges = 0
-    
-        for i, node in enumerate(self.nodes):
-            # 使用半径连接策略
-            neighbors = self._find_radius_neighbors(node)
+            if sample is None:
+                continue
+                
+            # 2. 检查delta有效性（与现有点的最小距离约束）
+            if not self._is_delta_valid(sample):
+                consecutive_failures += 1
+                continue
+                
+            # 3. 通过所有检查，将新点添加到图中
+            self.nodes.append(sample)
+            sampled_count += 1
+            consecutive_failures = 0  # 重置连续失败计数
+            
+            # 4. 定期更新KD树以加速后续搜索
+            if sampled_count % 50 == 0:
+                self._update_kdtree()
+                print(f"已采样 {sampled_count}/{self.num_nodes} 节点，连续失败: {consecutive_failures}")
+            
+            # 5. 为新节点寻找连接
+            connections = self._find_connections(sample)
+            for neighbor in connections:
+                self.edges.append((sample, neighbor))
         
-            for neighbor in neighbors:
-                # 避免重复连接
-                if (node, neighbor) not in self.edges and (neighbor, node) not in self.edges:
-                    edge_attempts += 1
-                    if self._is_valid_edge(node, neighbor):
-                        self.edges.append((node, neighbor))
-                        successful_edges += 1
+        if consecutive_failures >= self.max_consecutive_failures:
+            print(f"达到最大连续失败次数：{self.max_consecutive_failures}次") 
+        # 最后一次构建KD树，确保完整性
+        self._update_kdtree()
         
-            if i % 50 == 0 and i > 0:
-                print(f"已处理 {i}/{len(self.nodes)} 个节点，生成 {successful_edges} 条边")
+        # 找到最大连通分量并丢弃孤立点
+        self._keep_largest_component()
     
         end_time = time.time()
-        print(f"Classical PRM生成完成！")
+        print(f"delta-PRM生成完成！")
         print(f"节点数: {len(self.nodes)}")
         print(f"边数: {len(self.edges)}")
         print(f"生成时间: {end_time - start_time:.2f} 秒")
-        print(f"边连接成功率: {successful_edges/max(1,edge_attempts)*100:.1f}%")
+        print(f"总尝试次数: {total_attempts}, 成功率: {sampled_count/max(1,total_attempts)*100:.1f}%")
     
         return self.nodes, self.edges
-
+        
+    def _keep_largest_component(self):
+        """保留最大连通分量，删除孤立点"""
+        if not self.nodes:
+            return
+            
+        # 构建邻接表
+        adj = defaultdict(list)
+        for a, b in self.edges:
+            adj[a].append(b)
+            adj[b].append(a)
+            
+        # 找出所有连通分量
+        visited = set()
+        components = []
+        
+        for node in self.nodes:
+            if node in visited:
+                continue
+                
+            # BFS找出一个连通分量
+            component = []
+            queue = [node]
+            visited.add(node)
+            
+            while queue:
+                current = queue.pop(0)
+                component.append(current)
+                
+                for neighbor in adj[current]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+                        
+            components.append(component)
+            
+        # 如果没有连通分量，返回
+        if not components:
+            return
+            
+        # 找出最大的连通分量
+        largest_component = max(components, key=len)
+        largest_component_set = set(largest_component)
+        
+        # 更新节点和边
+        self.nodes = [n for n in self.nodes if n in largest_component_set]
+        self.edges = [(a, b) for a, b in self.edges 
+                     if a in largest_component_set and b in largest_component_set]
+                             
 class PRMStar(BasePathPlanner):
     """
     渐进最优概率路径图算法 (PRM*)
     该算法使用一个随采样点数量动态调整的连接半径，以理论上保证路径的渐进最优性。
     """
 
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, gamma_prm_star=15.0, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, gamma_prm_star=1.5, **kwargs):
         """
         初始化 PRM* 算法
         :param num_nodes: 采样的节点数量
@@ -1111,7 +1210,7 @@ class UnionFind:
         return False
 
 class SPARS(BasePathPlanner):
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, max_failures=200, visibility_radius = 1.0, stretch_factor = 3.0, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, max_failures=20, visibility_radius = 1.0, stretch_factor = 3.0, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
         self.visibility_radius = visibility_radius
@@ -1155,7 +1254,7 @@ class SPARS(BasePathPlanner):
 
         for _ in range(self.num_nodes):
             if failures >= self.max_failures:
-                print("达到最大失败次数，停止采样。")
+                print(f"达到最大失败次数{self.max_failures}，停止采样。")
                 break
             sample = self._random_sample()
             if sample is None:
@@ -1409,10 +1508,10 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "beam" # "classical" / "star" / "beam" / "spars"
+    generator_name = "spars" # "delta" / "star" / "beam" / "spars"
 
-    if generator_name == "classical":
-        prm_generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=2.0)
+    if generator_name == "delta":
+        prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=1000, delta_radius=0.15, connection_radius=1.6,max_consecutive_failures=50,)
         (nodes, edges) = prm_generator.generate_prm()
 
     elif generator_name == "star":

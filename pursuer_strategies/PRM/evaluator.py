@@ -43,9 +43,9 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     base_results_path = "./pursuer_strategies/PRM/results"
     # 每种环境和算法的采样节点数
     sample_nodes_map = {
-        'maze': {'classical': 600, 'star': 600, 'beam': 300, 'spars': 1500},
-        'indoor': {'classical': 500, 'star': 300, 'beam': 300, 'spars': 1800},
-        'random': {'classical': 400, 'star': 400, 'beam': 300, 'spars': 1000}
+        'maze': {'delta': 600, 'star': 600, 'beam': 300, 'spars': 1500},
+        'indoor': {'delta': 500, 'star': 300, 'beam': 300, 'spars': 1800},
+        'random': {'delta': 400, 'star': 400, 'beam': 300, 'spars': 1000}
     }
     # 设置环境参数
     if environment_type == "maze":
@@ -86,8 +86,8 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     generator = None
     # 运行算法
     try:
-        if algorithm_name == "classical":
-            generator = ClassicalPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
+        if algorithm_name == "delta":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
             nodes, edges = generator.generate_prm()
             medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
         
@@ -187,7 +187,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
 
 def run_full_evaluation():
     """运行完整的评测流程"""
-    algorithms = ['classical', 'star', 'beam', 'spars']
+    algorithms = ['delta', 'star', 'beam', 'spars']
     seeds = [42, 123, 456]  # 三个固定的随机种子
     # num_nodes = [100, 200, 300, 500]
     # 定义测试配置: (环境, 是否使用随机种子)
