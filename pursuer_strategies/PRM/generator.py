@@ -778,6 +778,152 @@ class BeamPRM(BasePathPlanner):
                 return True
         return False
 
+    def backward_prune_path(self, path_nodes):
+        """
+        后向裁剪路径:
+        """
+        if not path_nodes or len(path_nodes) < 3:
+            return path_nodes
+        for _ in range(5):
+            for i in range(len(path_nodes) - 2):
+                current = path_nodes[i]
+                next = path_nodes[i + 1]
+                after_next = path_nodes[i + 2]
+                if self._is_valid_edge(current, after_next):
+                    mid = self.cal_middle_point(next, after_next)
+                    path_nodes[i + 1] = mid
+                else:
+                    mid = self.cal_middle_point(next, after_next)
+                    if self._is_valid_edge(current, mid):
+                        path_nodes[i + 1] = mid
+                    else:
+                        mid = self.cal_middle_point(next, mid)
+                        if self._is_valid_edge(current, mid):
+                            path_nodes[i + 1] = mid
+            path_nodes.reverse()
+        return path_nodes
+
+
+    def find_path(self, start, goal):
+        """使用A*算法在路图中查找从start到goal的路径，因为引入了中轴骨架和后向算法，因此重写函数覆盖基类"""     
+        start_time = time.time()   
+        if not self._is_valid_position(start[0], start[1]):
+            raise ValueError("Start position is invalid or in collision.")
+        if not self._is_valid_position(goal[0], goal[1]):
+            raise ValueError("Goal position is invalid or in collision.")
+
+        if not self.nodes:
+            self.generate_prm()
+        if not self.nodes:
+            raise ValueError("Cannot generate any nodes in the PRM.")
+        if not self.medial_axis_all_nodes:
+            raise ValueError("Medial axis is empty, cannot find path.")
+        
+        adjacency = {node: {} for node in self.medial_axis_all_nodes}
+        for edge in self.medial_axis_edges:
+            u, v = edge
+            dist = self._distance(u, v)
+            adjacency[u][v] = dist
+            adjacency[v][u] = dist
+
+        adjacency[start] = {}
+        adjacency[goal] = {}
+        start_connected = False
+        goal_connected = False
+        for node in self.medial_axis_all_nodes:
+            if self._is_valid_edge(start, node):
+                dist = self._distance(start, node)
+                adjacency[start][node] = dist
+                adjacency[node][start] = dist
+                start_connected = True
+            if self._is_valid_edge(goal, node):
+                dist = self._distance(goal, node)
+                adjacency[goal][node] = dist
+                adjacency[node][goal] = dist
+                goal_connected = True
+        
+        if not start_connected:
+            # 从稠密图中寻找连接
+            for node in self.nodes:
+                if self._is_valid_edge(start, node):
+                    node_connected = False
+                    for m in self.medial_axis_all_nodes:
+                        if self._is_valid_edge(node, m):
+                            dist = self._distance(node, m)
+                            adjacency[node][m] = dist
+                            adjacency[m][node] = dist
+                            node_connected = True
+                    if node_connected:
+                        dist = self._distance(start, node)
+                        adjacency[start][node] = dist
+                        adjacency[node][start] = dist
+                        start_connected = True
+                        break
+        if not goal_connected:
+            # 从稠密图中寻找连接
+            for node in self.nodes:
+                if self._is_valid_edge(goal, node):
+                    node_connected = False
+                    for m in self.medial_axis_all_nodes:
+                        if self._is_valid_edge(node, m):
+                            dist = self._distance(node, m)
+                            adjacency[node][m] = dist
+                            adjacency[m][node] = dist
+                            node_connected = True
+                    if node_connected:
+                        dist = self._distance(goal, node)
+                        adjacency[goal][node] = dist
+                        adjacency[node][goal] = dist
+                        goal_connected = True
+                        break
+
+        open_set = []
+        open_set.append((self._distance(start, goal), start))
+        open_set_nodes = {start}
+        backtrack = {}
+        g_score = {start: 0}
+        visited = set()
+        while open_set:
+            current_f, current = heapq.heappop(open_set)
+            if current in visited:
+                continue
+            visited.add(current)
+            open_set_nodes.remove(current)
+
+            if current == goal:
+                path_nodes = []
+                tmp_node = goal
+                while tmp_node in backtrack:
+                    path_nodes.append(tmp_node)
+                    tmp_node = backtrack[tmp_node]
+                path_nodes.append(start)
+                path_nodes.reverse()
+                
+                path_nodes = self.backward_prune_path(path_nodes)
+                path_edges = []
+                for i in range(len(path_nodes) - 1):
+                    path_edges.append((path_nodes[i], path_nodes[i + 1]))
+                
+                path_length = sum(self._distance(path_nodes[i], path_nodes[i + 1]) for i in range(len(path_nodes) - 1))
+
+                return path_nodes, path_edges, path_length, time.time() - start_time
+
+            else:
+                for neighbor, dist in adjacency[current].items():
+                    if neighbor in visited:
+                        continue
+                    tentative_g = g_score[current] + dist
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        f_score = tentative_g + self._distance(neighbor, goal)
+                        backtrack[neighbor] = current
+                        if neighbor not in open_set_nodes:
+                            heapq.heappush(open_set, (f_score, neighbor))
+                            open_set_nodes.add(neighbor)
+
+        return None, None, None, time.time() - start_time
+
+
 class ClassicalPRM(BasePathPlanner):
     """经典概率路径图算法"""
 
@@ -1085,10 +1231,7 @@ class SPARS(BasePathPlanner):
             for v in self.sparse_adj[u]:
                 if (v, u) not in self.edges:
                     self.edges.append((u, v))
-        return self.nodes, self.edges
-
-                    
-                                    
+        return self.nodes, self.edges                             
 
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    

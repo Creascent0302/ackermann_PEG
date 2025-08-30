@@ -98,6 +98,10 @@ class BasePathPlanner(ABC):
                 return (x, y)
         return None
     
+    def cal_middle_point(self, node1, node2):
+        """计算两节点的中点"""
+        return ((node1[0] + node2[0]) / 2, (node1[1] + node2[1]) / 2)
+
     @abstractmethod
     def generate_prm(self):
         """生成路径图 - 抽象方法，子类必须实现"""
@@ -235,3 +239,104 @@ class BasePathPlanner(ABC):
         
         # 返回最大偏差
         return np.max(discrepancies)
+    
+    def find_path(self, start, goal):
+        """使用A*算法在路图中查找从start到goal的路径"""     
+        start_time = time.time()   
+        if not self._is_valid_position(start[0], start[1]):
+            raise ValueError("Start position is invalid or in collision.")
+        if not self._is_valid_position(goal[0], goal[1]):
+            raise ValueError("Goal position is invalid or in collision.")
+
+        if not self.nodes:
+            self.generate_prm()
+        if not self.nodes:
+            raise ValueError("Cannot generate any nodes in the PRM.")
+
+        adjacency = {node: {} for node in self.nodes}
+        for edge in self.edges:
+            u, v = edge
+            dist = self._distance(u, v)
+            adjacency[u][v] = dist
+            adjacency[v][u] = dist
+        
+        adjacency[start] = {}
+        adjacency[goal] = {}
+        start_connected = False
+        goal_connected = False
+        for node in self.nodes:
+            if self._is_valid_edge(start, node):
+                dist = self._distance(start, node)
+                adjacency[start][node] = dist
+                adjacency[node][start] = dist
+                start_connected = True
+            if self._is_valid_edge(goal, node):
+                dist = self._distance(goal, node)
+                adjacency[goal][node] = dist
+                adjacency[node][goal] = dist
+                goal_connected = True
+        
+        if not start_connected or not goal_connected:
+            return None, None, None, time.time() - start_time
+
+        open_set = []
+        open_set.append((self._distance(start, goal), start))
+        open_set_nodes = {start}
+        backtrack = {}
+        g_score = {start: 0}
+        visited = set()
+        while open_set:
+            current_f, current = heapq.heappop(open_set)
+            if current in visited:
+                continue
+            visited.add(current)
+            open_set_nodes.remove(current)
+
+            if current == goal:
+                path_nodes = []
+                tmp_node = goal
+                while tmp_node in backtrack:
+                    path_nodes.append(tmp_node)
+                    tmp_node = backtrack[tmp_node]
+                path_nodes.append(start)
+                path_nodes.reverse()
+                
+                path_edges = []
+                for i in range(len(path_nodes) - 1):
+                    path_edges.append((path_nodes[i], path_nodes[i + 1]))
+                
+                path_length = sum(self._distance(path_nodes[i], path_nodes[i + 1]) for i in range(len(path_nodes) - 1))
+
+                return path_nodes, path_edges, path_length, time.time() - start_time
+
+            else:
+                for neighbor, dist in adjacency[current].items():
+                    if neighbor in visited:
+                        continue
+                    tentative_g = g_score[current] + dist
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        f_score = tentative_g + self._distance(neighbor, goal)
+                        backtrack[neighbor] = current
+                        if neighbor not in open_set_nodes:
+                            heapq.heappush(open_set, (f_score, neighbor))
+                            open_set_nodes.add(neighbor)
+
+        return None, None, None, time.time() - start_time
+    
+    def generate_valid_point_pairs(self, num_pairs):
+        """生成指定数量的有效起终点对"""
+        pairs = []
+        attempts = 0
+        max_attempts = num_pairs * 10
+        min_distance = 8 * ENV_CONFIG['cell_size']
+        
+        while len(pairs) < num_pairs and attempts < max_attempts:
+            start = self._random_sample()
+            goal = self._random_sample()
+            attempts += 1
+            if self._is_valid_position(start[0], start[1]) and self._is_valid_position(goal[0], goal[1]) and start != goal:
+                if self._distance(start, goal) > min_distance:
+                    pairs.append((start, goal))
+
+        return pairs
