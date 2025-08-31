@@ -157,8 +157,8 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
         connection_radius = 1.5
     elif environment_type == "random":
-        ENV_CONFIG['gridnum_width'] = 30
-        ENV_CONFIG['gridnum_height'] = 30
+        ENV_CONFIG['gridnum_width'] = 40
+        ENV_CONFIG['gridnum_height'] = 40
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         total_cells = grid_width * grid_height
@@ -175,9 +175,9 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     
     # 设置算法参数
     sample_nodes_map = {
-        'maze': {'delta': 1000, 'star': 1000, 'beam': 300, 'spars': 1800},
-        'indoor': {'delta': 1000, 'star': 1000, 'beam': 300, 'spars': 1800},
-        'random': {'delta': 1000, 'star': 800, 'beam': 300, 'spars': 1000}
+        'maze': {'delta': 2000, 'star': 1000, 'beam': 500, 'spars': 3000},
+        'indoor': {'delta': 2000, 'star': 1000, 'beam': 500, 'spars': 3000},
+        'random': {'delta': 2000, 'star': 800, 'beam': 500, 'spars': 2000}
     }
     
     print(f"\n运行路径规划测试: {algorithm_name} on {environment_type} (seed={seed})")
@@ -186,7 +186,12 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     # 初始化PRM生成器
     generator = None
     if algorithm_name == "delta":
-        generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
+        if environment_type == "random":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.2, max_failures=100)
+        elif environment_type == "maze":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
+        elif environment_type == "indoor":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
     # elif algorithm_name == "star":
     #     generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
     elif algorithm_name == "beam":
@@ -206,7 +211,12 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
                                beam_angle_step_deg=25, beam_ray_step=0.2,
                                min_connection_radius=0.4)
     elif algorithm_name == "spars":
-        generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes)
+        if environment_type == "random":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.2)
+        elif environment_type == "maze":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.15, visibility_radius=1.6, connection_radius=1.0)
+        elif environment_type == "indoor":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm_name}")
     
@@ -324,7 +334,7 @@ def run_full_path_evaluation(num_path_tests=10):
     """运行完整的路径规划评测流程"""
     # algorithms = ['delta', 'star', 'beam', 'spars']
     algorithms = ['delta', 'beam', 'spars']
-    seeds = [42, 114, 520]  # 三个固定的随机种子
+    seeds = [43, 114, 520]  # 三个固定的随机种子
     
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [

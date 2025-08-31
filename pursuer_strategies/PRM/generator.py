@@ -939,13 +939,13 @@ class DeltaPRM(BasePathPlanner):
                  num_nodes=500, 
                  delta_radius=0.15,         # 最小连接距离
                  connection_radius=1.6,     # 最大连接距离
-                 max_consecutive_failures=30,  # 最大连续失败次数
+                 max_failures=30,  # 最大连续失败次数
                  **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
         self.delta_radius = delta_radius  # 最小距离阈值
         self.connection_radius = connection_radius  # 最大连接半径
-        self.max_consecutive_failures = max_consecutive_failures
+        self.max_failures = max_failures
         self.node_kdtree = None  # 用于快速查找近邻节点
 
     def _is_delta_valid(self, node):
@@ -1011,7 +1011,7 @@ class DeltaPRM(BasePathPlanner):
         total_attempts = 0
         
         # 主循环：直到达到目标节点数或连续失败次数过多
-        while sampled_count < self.num_nodes and consecutive_failures < self.max_consecutive_failures:
+        while sampled_count < self.num_nodes and consecutive_failures < self.max_failures:
             total_attempts += 1
             
             # 1. 随机采样一个点
@@ -1038,9 +1038,9 @@ class DeltaPRM(BasePathPlanner):
             connections = self._find_connections(sample)
             for neighbor in connections:
                 self.edges.append((sample, neighbor))
-        
-        if consecutive_failures >= self.max_consecutive_failures:
-            print(f"达到最大连续失败次数：{self.max_consecutive_failures}次") 
+
+        if consecutive_failures >= self.max_failures:
+            print(f"达到最大连续失败次数：{self.max_failures}次")
         # 最后一次构建KD树，确保完整性
         self._update_kdtree()
         
@@ -1210,14 +1210,15 @@ class UnionFind:
         return False
 
 class SPARS(BasePathPlanner):
-    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, max_failures=20, visibility_radius = 1.0, stretch_factor = 3.0, **kwargs):
+    def __init__(self, grid_width, grid_height, obstacles, num_nodes=500, max_failures=20, visibility_radius = 1.0, stretch_factor = 3.0, connection_radius = 0.6, delta = 0.1, **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         self.num_nodes = num_nodes
         self.visibility_radius = visibility_radius
         self.t_value = stretch_factor
         self.max_failures = max_failures
-        self.dense_connection_radius = visibility_radius * 0.5 # 稠密图连接半径
-        
+        self.dense_connection_radius = 0.6 # 稠密图连接半径
+        self.delta = delta
+
         self.sparse_nodes = []
         self.sparse_adj = defaultdict(dict)  # 稀疏图邻接表
         self.components = UnionFind()  # 稀疏图连通分量管理器
@@ -1239,6 +1240,7 @@ class SPARS(BasePathPlanner):
         if node not in self.sparse_nodes:
             self.sparse_nodes.append(node)
             self.components.make_set(node)
+            self.representatives[node] = node
 
     def add_sparse_edge(self, u, v):
         if u != v and v not in self.sparse_adj[u]:
@@ -1268,17 +1270,28 @@ class SPARS(BasePathPlanner):
                     self.dense_adj[node_d][sample] = dist
             
             guards = self._find_nearby_guards(sample)
+            # 情况零，检查是否离已有 guard 太近
+            flag = False
+            for g in guards:
+                if self._distance(sample, g) <= self.delta:
+                    failures += 1
+                    flag = True
+                    break
+            if flag:
+                continue
+
             # 情况一，没有可以连接的 guard ，说明增加了覆盖度，加到稀疏图中
             if not guards:
                 self.add_sparse_node(sample)
                 self.representatives[sample] = sample
+                # print(f"添加新的稀疏节点 {sample}，当前稀疏图节点数: {len(self.sparse_nodes)}")
                 failures = 0
                 continue
             else:
                 # 情况二，是否连接两个不连通区域，使用并查集判断
                 guard = min(guards, key=lambda g: self._distance(sample, g))
                 self.representatives[sample] = guard
-
+                
                 visible_guards = {self.components.find(g) for g in guards}
                 if len(visible_guards) > 1:
                     self.add_sparse_node(sample)
@@ -1286,7 +1299,7 @@ class SPARS(BasePathPlanner):
                         self.add_sparse_edge(g, sample)
                     failures = 0
                     continue
-            
+                # print(f"情况二：样本点 {sample} 连接到守卫图")
                 # 情况三，检查是否需要添加中间节点以确保接口连接
                 for point in self.dense_adj.get(sample, {}):
                     # 检查临近节点的守卫节点
@@ -1490,8 +1503,8 @@ if __name__ == "__main__":
     
     elif ENVIRONMENT_TYPE == "random":  
         # 原始的随机环境  
-        ENV_CONFIG['gridnum_width'] = 30  
-        ENV_CONFIG['gridnum_height'] = 30  
+        ENV_CONFIG['gridnum_width'] = 40  
+        ENV_CONFIG['gridnum_height'] = 40  
         grid_width = ENV_CONFIG['gridnum_width']  
         grid_height = ENV_CONFIG['gridnum_height']  
         total_cells = grid_width * grid_height  
@@ -1511,7 +1524,7 @@ if __name__ == "__main__":
     generator_name = "spars" # "delta" / "star" / "beam" / "spars"
 
     if generator_name == "delta":
-        prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=1000, delta_radius=0.15, connection_radius=1.6,max_consecutive_failures=50,)
+        prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
         (nodes, edges) = prm_generator.generate_prm()
 
     elif generator_name == "star":
@@ -1560,10 +1573,8 @@ if __name__ == "__main__":
         medial_axis_paths) = prm_generator.generate_prm()
 
     elif generator_name == "spars":
-        spars = SPARS(grid_width, grid_height, obstacles,
-                    max_samples=6000, num_nodes=1000,
-                    delta=connection_radius, stretch_factor=5)
-        (nodes, edges) = spars.generate_prm()
+        generator = SPARS(grid_width, grid_height, obstacles, num_nodes=3000, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
+        (nodes, edges) = generator.generate_prm()
 
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
