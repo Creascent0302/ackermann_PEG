@@ -187,11 +187,11 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     generator = None
     if algorithm_name == "delta":
         if environment_type == "random":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.2, max_failures=100)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
         elif environment_type == "maze":
             generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
         elif environment_type == "indoor":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100)
     # elif algorithm_name == "star":
     #     generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
     elif algorithm_name == "beam":
