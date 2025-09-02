@@ -254,8 +254,8 @@ def generate_indoor_obstacles(grid_width, grid_height):
     程序化地生成一个室内环境（房间+走廊）的障碍物列表。   
     """  
     obstacles_set = set()
-    for i in range(1, 5):
-        for j in range(0,50):
+    for i in range(0, 6):
+        for j in range(0, 52):
             obstacles_set.add((i * 10, j))
             obstacles_set.add((j, i * 10))
     for i in range(0, 2):

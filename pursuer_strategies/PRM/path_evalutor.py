@@ -148,14 +148,12 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_maze_obstacles(grid_width, grid_height)
-        connection_radius = 2.0
     elif environment_type == "indoor":
         ENV_CONFIG['gridnum_width'] = 50
         ENV_CONFIG['gridnum_height'] = 50
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
-        connection_radius = 1.5
     elif environment_type == "random":
         ENV_CONFIG['gridnum_width'] = 40
         ENV_CONFIG['gridnum_height'] = 40
@@ -169,7 +167,6 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
             y = np.random.randint(0, grid_height)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
-        connection_radius = 1.0
     else:
         raise ValueError(f"Unknown environment type: {environment_type}")
     
@@ -187,11 +184,11 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
     generator = None
     if algorithm_name == "delta":
         if environment_type == "random":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.2)
         elif environment_type == "maze":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.3)
         elif environment_type == "indoor":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100, delta_radius=0.3)
     # elif algorithm_name == "star":
     #     generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
     elif algorithm_name == "beam":
@@ -214,9 +211,9 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
         if environment_type == "random":
             generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.2)
         elif environment_type == "maze":
-            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.15, visibility_radius=1.6, connection_radius=1.0)
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.15, visibility_radius=0.8, connection_radius=0.6)
         elif environment_type == "indoor":
-            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=200, delta=0.2, visibility_radius=1.4, connection_radius=1.0)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm_name}")
     
@@ -568,7 +565,7 @@ if __name__ == "__main__":
     # 您可以选择运行完整评测或者演示单个路径规划
     
     # 选项1: 运行完整评测 (测试所有算法在所有环境下的性能)
-    run_full_path_evaluation(num_path_tests=50)
+    run_full_path_evaluation(num_path_tests=100)
     
     # 选项2: 演示单个路径规划 (交互式查看结果)
     # demo_path_planning(algorithm_name="beam", environment_type="maze", seed=42, interactive=True)

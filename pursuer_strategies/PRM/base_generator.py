@@ -106,8 +106,8 @@ class BasePathPlanner(ABC):
     def generate_prm(self):
         """生成路径图 - 抽象方法，子类必须实现"""
         pass
-    
-    def cal_dispersion(self, num_samples=1000):
+
+    def cal_dispersion(self, num_samples=1000, media=False):
         """
         计算路图的离散度 (Dispersion) - 性能优化版本。
         """
@@ -163,8 +163,33 @@ class BasePathPlanner(ABC):
                 max_distance = max(max_distance, distances[i][j])
                 break        
         return max_distance
-    
-    def cal_discrepancy(self, num_samples=1000):
+
+    def backward_prune_path(self, path_nodes):
+        """
+        后向裁剪路径:
+        """
+        if not path_nodes or len(path_nodes) < 3:
+            return path_nodes
+        for _ in range(7):
+            for i in range(len(path_nodes) - 2):
+                current = path_nodes[i]
+                next = path_nodes[i + 1]
+                after_next = path_nodes[i + 2]
+                if self._is_valid_edge(current, after_next):
+                    mid = self.cal_middle_point(next, after_next)
+                    path_nodes[i + 1] = mid
+                else:
+                    mid = self.cal_middle_point(next, after_next)
+                    if self._is_valid_edge(current, mid):
+                        path_nodes[i + 1] = mid
+                    else:
+                        mid = self.cal_middle_point(next, mid)
+                        if self._is_valid_edge(current, mid):
+                            path_nodes[i + 1] = mid
+            path_nodes.reverse()
+        return path_nodes
+
+    def cal_discrepancy(self, num_samples=1000, media=False):
         """
         计算节点集的星偏差度 (Star Discrepancy) - 性能优化版本。
         限制矩形面积不超过地图总面积的1/8。
@@ -301,6 +326,7 @@ class BasePathPlanner(ABC):
                 path_nodes.append(start)
                 path_nodes.reverse()
                 
+                path_nodes = self.backward_prune_path(path_nodes)
                 path_edges = []
                 for i in range(len(path_nodes) - 1):
                     path_edges.append((path_nodes[i], path_nodes[i + 1]))

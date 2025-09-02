@@ -30,7 +30,6 @@ def save_metrics_to_file(metrics, filepath):
             metrics['edges_count'],
             metrics['dispersion'],
             metrics['discrepancy'],
-            metrics['connection_radius']
         ])
 
 def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True):
@@ -43,9 +42,9 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     base_results_path = "./pursuer_strategies/PRM/results"
     # 每种环境和算法的采样节点数
     sample_nodes_map = {
-        'maze': {'delta': 600, 'star': 600, 'beam': 300, 'spars': 1500},
-        'indoor': {'delta': 500, 'star': 300, 'beam': 300, 'spars': 1800},
-        'random': {'delta': 400, 'star': 400, 'beam': 300, 'spars': 1000}
+        'maze': {'delta': 2000, 'beam': 500, 'spars': 3000},
+        'indoor': {'delta': 2000, 'beam': 500, 'spars': 3000},
+        'random': {'delta': 2000, 'beam': 500, 'spars': 2000}
     }
     # 设置环境参数
     if environment_type == "maze":
@@ -54,17 +53,15 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_maze_obstacles(grid_width, grid_height)
-        connection_radius = 2.0
     elif environment_type == "indoor":
-        ENV_CONFIG['gridnum_width'] = 50
-        ENV_CONFIG['gridnum_height'] = 50
+        ENV_CONFIG['gridnum_width'] = 51
+        ENV_CONFIG['gridnum_height'] = 51
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
-        connection_radius = 1.5
     elif environment_type == "random":
-        ENV_CONFIG['gridnum_width'] = 30
-        ENV_CONFIG['gridnum_height'] = 30
+        ENV_CONFIG['gridnum_width'] = 40
+        ENV_CONFIG['gridnum_height'] = 40
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         total_cells = grid_width * grid_height
@@ -75,7 +72,6 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
             y = np.random.randint(0, grid_height)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
-        connection_radius = 1.0
     else:
         raise ValueError(f"Unknown environment type: {environment_type}")
     
@@ -84,65 +80,71 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     # 记录开始时间
     start_time = time.time()
     generator = None
-    # 运行算法
-    try:
-        if algorithm_name == "delta":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=connection_radius)
-            nodes, edges = generator.generate_prm()
-            medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
-        
-        elif algorithm_name == "star":
-            generator = PRMStar(grid_width, grid_height, obstacles, 
-                               num_nodes=num_nodes, gamma_prm_star=15.0)
-            nodes, edges = generator.generate_prm()
-            medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
-        
-        elif algorithm_name == "beam":
-            if environment_type == "random":
-                generator = BeamPRM(grid_width, grid_height, obstacles,
-                                       num_nodes=num_nodes, connection_radius=1.2,
-                                       beam_angle_step_deg=3, beam_ray_step=0.08,
-                                       min_connection_radius=0.3)
-            elif environment_type == "maze":
-                generator = BeamPRM(grid_width, grid_height, obstacles,
-                                       num_nodes=num_nodes, connection_radius=1.5,
-                                       beam_angle_step_deg=25, beam_ray_step=0.2,
-                                       min_connection_radius=0.4)
-            elif environment_type == "indoor":
-                generator = BeamPRM(grid_width, grid_height, obstacles,
-                                       num_nodes=num_nodes, connection_radius=2,
-                                       beam_angle_step_deg=25, beam_ray_step=0.2,
-                                       min_connection_radius=0.4)
-            
-            result = generator.generate_prm()
-            if len(result) >= 6:
-                nodes, edges, medial_axis_nodes, medial_axis_all_nodes, medial_axis_edges, medial_axis_paths = result
-            else:
-                nodes, edges = result[:2]
-                medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
-        
-        elif algorithm_name == "spars":
-            generator = SPARS(grid_width, grid_height, obstacles,
-                             num_nodes=num_nodes)
-            result = generator.generate_prm()
-            if len(result) >= 2:
-                nodes, edges = result[:2]
-            else:
-                nodes, edges = [], []
-            medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
-        
+    if algorithm_name == "delta":
+        if environment_type == "random":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.2)
+        elif environment_type == "maze":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.3)
+        elif environment_type == "indoor":
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100, delta_radius=0.3)
+    elif algorithm_name == "beam":
+        if environment_type == "random":
+            generator = BeamPRM(grid_width, grid_height, obstacles,
+                               num_nodes=num_nodes, connection_radius=1.2,
+                               beam_angle_step_deg=2, beam_ray_step=0.08,
+                               min_connection_radius=0.25)
+        elif environment_type == "maze":
+            generator = BeamPRM(grid_width, grid_height, obstacles,
+                               num_nodes=num_nodes, connection_radius=1.5,
+                               beam_angle_step_deg=25, beam_ray_step=0.2,
+                               min_connection_radius=0.3)
+        elif environment_type == "indoor":
+            generator = BeamPRM(grid_width, grid_height, obstacles,
+                               num_nodes=num_nodes, connection_radius=2.0,
+                               beam_angle_step_deg=25, beam_ray_step=0.2,
+                               min_connection_radius=0.4)
+    elif algorithm_name == "spars":
+        if environment_type == "random":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.2)
+        elif environment_type == "maze":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=100, delta=0.15, visibility_radius=0.8, connection_radius=0.6)
+        elif environment_type == "indoor":
+            generator = SPARS(grid_width, grid_height, obstacles, num_nodes=num_nodes, max_failures=200, delta=0.2, visibility_radius=1.4, connection_radius=1.0)
+    else:
+        raise ValueError(f"Unknown algorithm: {algorithm_name}")
+    
+    if algorithm_name == "beam":
+        result = generator.generate_prm()
+        if len(result) >= 6:
+            nodes, edges, medial_axis_nodes, medial_axis_all_nodes, medial_axis_edges, medial_axis_paths = result
         else:
-            raise ValueError(f"Unknown algorithm: {algorithm_name}")
-    
-    except Exception as e:
-        print(f"算法执行失败: {e}")
-        return None
-    
+            nodes, edges = result[:2]
+            medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
+            medial_axis_all_nodes = set()
+    else:
+        nodes, edges = generator.generate_prm()
+        medial_axis_nodes, medial_axis_edges, medial_axis_paths = set(), set(), []
+        medial_axis_all_nodes = set()
+
     # 记录结束时间
     end_time = time.time()
     generation_time = end_time - start_time
     dispersion = generator.cal_dispersion() if generator else 0.0
     discrepancy = generator.cal_discrepancy() if generator else 0.0
+
+    # 计算beam算法中轴图的指标
+    if algorithm_name == "beam" and medial_axis_all_nodes and medial_axis_edges:
+        # 需实现或已有相关方法
+        medial_dispersion = generator.cal_dispersion(media=True)
+        medial_discrepancy = generator.cal_discrepancy(media=True)
+        medial_axis_nodes_count = len(medial_axis_all_nodes)
+        medial_axis_edges_count = len(medial_axis_edges)
+    else:
+        medial_dispersion = 0.0
+        medial_discrepancy = 0.0
+        medial_axis_nodes_count = 0
+        medial_axis_edges_count = 0
+
     # 准备指标
     metrics = {
         'timestamp': datetime.now().isoformat(),
@@ -154,7 +156,10 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         'edges_count': len(edges),
         'dispersion': round(dispersion, 4),
         'discrepancy': round(discrepancy, 4),
-        'connection_radius': connection_radius
+        'medial_axis_nodes_count': medial_axis_nodes_count,
+        'medial_axis_edges_count': medial_axis_edges_count,
+        'medial_axis_dispersion': round(medial_dispersion, 4),
+        'medial_axis_discrepancy': round(medial_discrepancy, 4),
     }
     
     print(f"完成: {len(nodes)} 节点, {len(edges)} 边, "
@@ -178,18 +183,17 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         renderer = PRMRenderer(grid_width, grid_height, headless=True)
         if algorithm_name == "beam":
             renderer.save_image(nodes, edges, obstacles, filepath, 
-                              medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+                              medial_axis_all_nodes, medial_axis_edges, medial_axis_paths, env=environment_type, algorithm=algorithm_name)
         else:
-            renderer.save_image(nodes, edges, obstacles, filepath)
+            renderer.save_image(nodes, edges, obstacles, filepath, env=environment_type, algorithm=algorithm_name)
         pygame.quit()
     
     return metrics
 
 def run_full_evaluation():
     """运行完整的评测流程"""
-    algorithms = ['delta', 'star', 'beam', 'spars']
-    seeds = [42, 123, 456]  # 三个固定的随机种子
-    # num_nodes = [100, 200, 300, 500]
+    algorithms = ['delta', 'beam', 'spars']
+    seeds = [43, 114, 520]  # 三个固定的随机种子
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [
         ('maze', True),      # 迷宫使用随机种子
@@ -213,21 +217,19 @@ def run_full_evaluation():
     print(f"开始运行 {total_tests} 个测试...")
     print(f"结果将保存到: {base_results_path}")
 
-    # 清空所有CSV文件
-    for env, _ in test_configs:
-        metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
-        # 创建文件夹如果不存在
-        os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
-        # 写入表头
-        with open(metrics_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp', 'algorithm', 'environment', 'seed',
-                'generation_time', 'nodes_count', 'edges_count',
-                'dispersion', 'discrepancy', 'connection_radius'
-            ])
+    # 创建汇总CSV文件
+    summary_file = os.path.join(base_results_path, "evaluation_summary.csv")
+    os.makedirs(os.path.dirname(summary_file), exist_ok=True)
+    with open(summary_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            'algorithm', 'environment', 'seed',
+            'generation_time', 'nodes_count', 'edges_count',
+            'dispersion', 'discrepancy',
+            'medial_axis_nodes_count', 'medial_axis_edges_count',
+            'medial_axis_dispersion', 'medial_axis_discrepancy'
+        ])
     
-    # for num_node in num_nodes:
     for env, use_seeds in test_configs:
         print(f"\n{'='*50}")
         print(f"测试环境: {env} (使用随机种子: {use_seeds})")
@@ -245,9 +247,23 @@ def run_full_evaluation():
                         if metrics:
                             all_metrics.append(metrics)
                             
-                            # 保存单个结果
-                            metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
-                            save_metrics_to_file(metrics, metrics_file)
+                            # 保存到汇总CSV
+                            with open(summary_file, 'a', newline='') as f:
+                                writer = csv.writer(f)
+                                writer.writerow([
+                                    metrics['algorithm'],
+                                    metrics['environment'],
+                                    metrics['seed'],
+                                    metrics['generation_time'],
+                                    metrics['nodes_count'],
+                                    metrics['edges_count'],
+                                    metrics['dispersion'],
+                                    metrics['discrepancy'],
+                                    metrics['medial_axis_nodes_count'],
+                                    metrics['medial_axis_edges_count'],
+                                    metrics['medial_axis_dispersion'],
+                                    metrics['medial_axis_discrepancy']
+                                ])
                         
                     except Exception as e:
                         print(f"错误: {alg} on {env} (seed={seed}): {str(e)}")
@@ -264,19 +280,32 @@ def run_full_evaluation():
                     if metrics:
                         all_metrics.append(metrics)
                         
-                        # 保存单个结果
-                        metrics_file = os.path.join(base_results_path, f"metrics_{env}.csv")
-                        save_metrics_to_file(metrics, metrics_file)
+                        # 保存到汇总CSV
+                        with open(summary_file, 'a', newline='') as f:
+                            writer = csv.writer(f)
+                            writer.writerow([
+                                metrics['algorithm'],
+                                metrics['environment'],
+                                metrics['seed'],
+                                metrics['generation_time'],
+                                metrics['nodes_count'],
+                                metrics['edges_count'],
+                                metrics['dispersion'],
+                                metrics['discrepancy'],
+                                metrics['medial_axis_nodes_count'],
+                                metrics['medial_axis_edges_count'],
+                                metrics['medial_axis_dispersion'],
+                                metrics['medial_axis_discrepancy']
+                            ])
                     
                 except Exception as e:
                     print(f"错误: {alg} on {env}: {str(e)}")
                     import traceback
                     traceback.print_exc()
     
-    # 保存汇总结果
-    summary_file = os.path.join(base_results_path, "evaluation_summary.json")
-    os.makedirs(base_results_path, exist_ok=True)
-    with open(summary_file, 'w') as f:
+    # 保存汇总结果到JSON
+    json_summary_file = os.path.join(base_results_path, "evaluation_summary.json")
+    with open(json_summary_file, 'w') as f:
         json.dump(all_metrics, f, indent=2)
     
     print(f"\n{'='*60}")
@@ -284,8 +313,7 @@ def run_full_evaluation():
     print(f"{'='*60}")
     print(f"结果保存在: {base_results_path}")
     print(f"图像文件: {base_results_path}/{{environment}}/{{algorithm}}_{{environment}}_{{seed}}.pdf")
-    print(f"指标文件: {base_results_path}/metrics_{{environment}}.csv")
-    print(f"汇总文件: {summary_file}")
+    print(f"汇总文件: {summary_file} 和 {json_summary_file}")
     
     # 简单统计
     print(f"\n总计测试: {len(all_metrics)} 个")

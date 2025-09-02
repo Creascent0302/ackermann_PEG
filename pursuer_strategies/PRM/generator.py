@@ -778,32 +778,6 @@ class BeamPRM(BasePathPlanner):
                 return True
         return False
 
-    def backward_prune_path(self, path_nodes):
-        """
-        后向裁剪路径:
-        """
-        if not path_nodes or len(path_nodes) < 3:
-            return path_nodes
-        for _ in range(7):
-            for i in range(len(path_nodes) - 2):
-                current = path_nodes[i]
-                next = path_nodes[i + 1]
-                after_next = path_nodes[i + 2]
-                if self._is_valid_edge(current, after_next):
-                    mid = self.cal_middle_point(next, after_next)
-                    path_nodes[i + 1] = mid
-                else:
-                    mid = self.cal_middle_point(next, after_next)
-                    if self._is_valid_edge(current, mid):
-                        path_nodes[i + 1] = mid
-                    else:
-                        mid = self.cal_middle_point(next, mid)
-                        if self._is_valid_edge(current, mid):
-                            path_nodes[i + 1] = mid
-            path_nodes.reverse()
-        return path_nodes
-
-
     def find_path(self, start, goal):
         """使用A*算法在路图中查找从start到goal的路径，因为引入了中轴骨架和后向算法，因此重写函数覆盖基类"""     
         start_time = time.time()   
@@ -927,7 +901,147 @@ class BeamPRM(BasePathPlanner):
 
         return None, None, None, time.time() - start_time
 
+    def cal_dispersion(self, num_samples=1000, media=False):
+        """
+        计算路图的离散度 (Dispersion) - 性能优化版本。
+        """
+        if not media:
+            if not self.nodes:
+                return float('inf')
+        else:
+            if not self.medial_axis_all_nodes:
+                return float('inf')
 
+        # 预计算物理尺寸和常量
+        physical_width = self.grid_width * ENV_CONFIG['cell_size']
+        physical_height = self.grid_height * ENV_CONFIG['cell_size']
+        cell_size = ENV_CONFIG['cell_size']
+        
+        # 构建节点KDTree加速距离查询
+        nodes_array = np.array(self.nodes) if not media else np.array(list(self.medial_axis_all_nodes))
+        nodes_kdtree = KDTree(nodes_array)
+        
+        # 障碍物集合转换为更高效的查询结构
+        obstacle_set = set(self.obstacles)
+        
+        # 批量生成测试点
+        test_points = np.random.uniform(
+            low=[0, 0], 
+            high=[physical_width, physical_height], 
+            size=(num_samples * 2, 2)  # 生成2倍点数，减少后续循环
+        )
+        
+        # 快速筛选有效测试点
+        valid_points = []
+        for point in test_points:
+            # 快速检查是否在障碍物上
+            grid_x, grid_y = int(point[0] / cell_size), int(point[1] / cell_size)
+            if 0 <= grid_x < self.grid_width and 0 <= grid_y < self.grid_height:
+                if (grid_x, grid_y) not in obstacle_set:
+                    valid_points.append(point)
+                    if len(valid_points) >= num_samples:
+                        break
+                    
+        if not valid_points:
+            return 0.0
+        
+        valid_points = np.array(valid_points[: num_samples])
+        
+        # 使用KDTree查询每个测试点到最近节点的距离
+        distances, indices = nodes_kdtree.query(valid_points, k=3)  # 查询最近的3个节点
+        
+        # 初始化最大距离
+        max_distance = 0
+        
+        # 验证最近节点的路径是否有效
+        for i, point in enumerate(valid_points):
+            # 只检查最近的几个节点
+            for j in range(min(3, len(indices[i]))):                
+                # 简化有效性检查 - 只在必要时使用完整检查
+                max_distance = max(max_distance, distances[i][j])
+                break        
+        return max_distance
+
+    def cal_discrepancy(self, num_samples=1000, media=False):
+        """
+        计算节点集的星偏差度 (Star Discrepancy) - 性能优化版本。
+        限制矩形面积不超过地图总面积的1/8。
+        """
+        if not media:
+            if not self.nodes:
+                return 1.0
+        else:
+            if not self.medial_axis_all_nodes:
+                return 1.0
+
+        # 预计算常量
+        physical_width = self.grid_width * ENV_CONFIG['cell_size']
+        physical_height = self.grid_height * ENV_CONFIG['cell_size']
+        total_area = physical_width * physical_height
+        max_area = total_area / 8  # 限制最大矩形面积为地图总面积的1/8
+        num_nodes = len(self.nodes) if not media else len(self.medial_axis_all_nodes)
+
+        # 将节点转换为NumPy数组 - 只做一次
+        np_nodes = np.array(self.nodes) if not media else np.array(list(self.medial_axis_all_nodes))
+
+        # 批量生成所有矩形 (每个矩形需要2个点)
+        points = np.random.uniform(
+            low=[0, 0], 
+            high=[physical_width, physical_height], 
+            size=(num_samples, 2, 2)
+        )
+        
+        # 预分配结果数组
+        discrepancies = np.zeros(num_samples)
+        
+        # 向量化处理所有矩形
+        for i in range(num_samples):
+            # 获取矩形坐标
+            x1 = min(points[i, 0, 0], points[i, 1, 0])
+            x2 = max(points[i, 0, 0], points[i, 1, 0])
+            y1 = min(points[i, 0, 1], points[i, 1, 1])
+            y2 = max(points[i, 0, 1], points[i, 1, 1])
+            
+            # 计算矩形面积并检查是否超限
+            rect_area = (x2 - x1) * (y2 - y1)
+            
+            # 如果面积超过限制，缩小矩形保持中心点不变
+            if rect_area > max_area:
+                # 计算矩形中心
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+                
+                # 计算缩放因子
+                scale = math.sqrt(max_area / rect_area)
+                
+                # 计算新的半宽和半高
+                half_width = (x2 - x1) / 2 * scale
+                half_height = (y2 - y1) / 2 * scale
+                
+                # 更新矩形坐标
+                x1 = center_x - half_width
+                x2 = center_x + half_width
+                y1 = center_y - half_height
+                y2 = center_y + half_height
+            
+            # 计算面积比例
+            area_rate = (x2 - x1) * (y2 - y1) / total_area
+            
+            # 计算点在矩形内的比例
+            mask = ((np_nodes[:, 0] >= x1) & 
+                    (np_nodes[:, 0] <= x2) & 
+                    (np_nodes[:, 1] >= y1) & 
+                    (np_nodes[:, 1] <= y2))
+            
+            count = np.sum(mask)
+            point_rate = count / num_nodes
+            
+            # 计算偏差
+            discrepancies[i] = abs(area_rate - point_rate)
+        
+        # 返回最大偏差
+        return np.max(discrepancies)
+    
 class DeltaPRM(BasePathPlanner):
     """
     delta-PRM算法
@@ -1028,10 +1142,9 @@ class DeltaPRM(BasePathPlanner):
             self.nodes.append(sample)
             sampled_count += 1
             consecutive_failures = 0  # 重置连续失败计数
-            
+            self._update_kdtree()
             # 4. 定期更新KD树以加速后续搜索
             if sampled_count % 50 == 0:
-                self._update_kdtree()
                 print(f"已采样 {sampled_count}/{self.num_nodes} 节点，连续失败: {consecutive_failures}")
             
             # 5. 为新节点寻找连接
@@ -1382,9 +1495,9 @@ class PRMRenderer:
             
         self.clock = pygame.time.Clock()
 
-    def render(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+    def render(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None, env="random", algorithm="beam"):
         """渲染PRM"""
-        self.screen.fill((229, 221, 215))  # 背景
+        self.screen.fill((255, 255, 255))  # 背景
 
         # 绘制障碍物
         for obs in obstacles:
@@ -1404,7 +1517,7 @@ class PRMRenderer:
                 continue
             x1, y1 = a
             x2, y2 = b
-            pygame.draw.line(self.screen, (40, 100, 180),
+            pygame.draw.line(self.screen, (158, 176, 204) if algorithm == "beam" else (40, 100, 180),
                             (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
                             int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
                             (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
@@ -1423,22 +1536,22 @@ class PRMRenderer:
                 drawn_seg.add(seg_key)
                 x1, y1 = a
                 x2, y2 = b
-                pygame.draw.line(self.screen, (0, 140, 0),
+                pygame.draw.line(self.screen, (40, 100, 180),
                                 (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
                                 int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
                                 (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
                                 int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
 
-        # 若没有路径则用边
-        if not medial_axis_paths:
-            for a, b in medial_axis_edges:
-                x1, y1 = a
-                x2, y2 = b
-                pygame.draw.line(self.screen, (0, 140, 0),
-                                (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
-                                int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
-                                (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
-                                int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 3)
+        # # 若没有路径则用边
+        # if not medial_axis_paths:
+        for a, b in medial_axis_edges:
+            x1, y1 = a
+            x2, y2 = b
+            pygame.draw.line(self.screen, (40, 100, 180),
+                            (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
+                            int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
+                            (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
+                            int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 2 if env == "random" else 3)
 
         # 绘制节点
         for node in nodes:
@@ -1446,37 +1559,40 @@ class PRMRenderer:
             pos = (int(x * self.cell_size / ENV_CONFIG['cell_size']),
                   int(y * self.cell_size / ENV_CONFIG['cell_size']))
             if node in medial_axis_nodes:
-                color = (0, 180, 0)    # 绿色: 中轴
-                radius = self.cell_size // 3
+                color = (255, 91, 0)    # 红色: 中轴骨架节点
+                if env == "maze" or env == "indoor":
+                    radius = self.cell_size // 3
+                else:
+                    radius = self.cell_size // 4
             else:
-                color = (255, 91, 0)    # 红色: 普通
+                color = (255, 185, 153) if algorithm == "beam" else (255, 91, 0)  # 红色: 普通
                 radius = self.cell_size // 4
             pygame.draw.circle(self.screen, color, pos, radius)
         if not self.headless:
             pygame.display.flip()
         return self.screen
 
-    def save_image(self, nodes, edges, obstacles, filepath, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+    def save_image(self, nodes, edges, obstacles, filepath, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None, env="random", algorithm="beam"):
         """渲染并保存图像"""
-        screen = self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+        screen = self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths, env, algorithm)
         save_pdf_image(screen, filepath)
         print(f"图像已保存到: {filepath}")
 
-    def run(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+    def run(self, nodes, edges, obstacles, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None, env="random", algorithm="beam"):
         """运行渲染器（交互模式）"""
         running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-            self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+            self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths, env, algorithm)
             self.clock.tick(30)
         pygame.quit()
 
 
 if __name__ == "__main__":
     # 示例使用
-    ENVIRONMENT_TYPE = "random" # <-- 在这里切换环境！  
+    ENVIRONMENT_TYPE = "indoor" # <-- 在这里切换环境！  
     np.random.seed(42)  # 固定随机种子以获得可重复结果
     import random
     random.seed(42)
@@ -1493,8 +1609,8 @@ if __name__ == "__main__":
     
     elif ENVIRONMENT_TYPE == "indoor":  
         # 室内环境特定配置  
-        ENV_CONFIG['gridnum_width'] = 50  
-        ENV_CONFIG['gridnum_height'] = 50  
+        ENV_CONFIG['gridnum_width'] = 51  
+        ENV_CONFIG['gridnum_height'] = 51  
         grid_width = ENV_CONFIG['gridnum_width']  
         grid_height = ENV_CONFIG['gridnum_height']  
         obstacles = generate_indoor_obstacles(grid_width, grid_height)  
@@ -1521,7 +1637,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "delta" / "star" / "beam" / "spars"
+    generator_name = "beam" # "delta" / "star" / "beam" / "spars"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
@@ -1587,5 +1703,5 @@ if __name__ == "__main__":
     renderer = PRMRenderer(grid_width, grid_height)
     # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
     #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
-    renderer.run(nodes, edges, obstacles)
+    renderer.run(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name)
 
