@@ -5,12 +5,12 @@ import os
 
 # 设置字体为Times New Roman并增大字体大小
 plt.rcParams['font.family'] = 'Times New Roman'
-plt.rcParams['font.size'] = 26          # 从10增加到20
-plt.rcParams['axes.labelsize'] = 26     # 从12增加到16
-plt.rcParams['axes.titlesize'] = 26     # 从14增加到18
-plt.rcParams['xtick.labelsize'] = 26    # 从10增加到14
-plt.rcParams['ytick.labelsize'] = 26    # 从10增加到14
-plt.rcParams['legend.fontsize'] = 22    # 从10增加到14
+plt.rcParams['font.size'] = 26          
+plt.rcParams['axes.labelsize'] = 26     
+plt.rcParams['axes.titlesize'] = 26     
+plt.rcParams['xtick.labelsize'] = 26    
+plt.rcParams['ytick.labelsize'] = 26    
+plt.rcParams['legend.fontsize'] = 22    
 
 # 读取两个数据文件
 prm_data = pd.read_csv('./pursuer_strategies/PRM/results/evaluation_summary.csv')
@@ -19,8 +19,8 @@ path_data = pd.read_csv('./pursuer_strategies/PRM/results/paths/path_evaluation_
 # 设置颜色方案
 colors = ['#E38691', '#F5C326', '#BACBA9', "#B7CAD9"]
 
-# 设置图形样式 - 改为横向3*2排版
-fig, axes = plt.subplots(2, 3, figsize=(24, 16))  # 从(3, 2)改为(2, 3)，调整figsize
+# 设置图形样式 - 减小高度，使图更扁
+fig, axes = plt.subplots(2, 3, figsize=(24, 12))  # 从(24, 16)改为(24, 12)，减小高度
 
 # 定义所有指标的信息 - 按新的顺序排列
 metrics_info = [
@@ -99,10 +99,17 @@ generation_time_algorithm_mapping = {
     'spars': 'SPARS'
 }
 
+# 添加环境名称映射
+environment_name_mapping = {
+    'maze': 'Maze',
+    'indoor': 'Indoor',
+    'random': 'Cluttered'
+}
+
 # 为每个指标画图
 for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
-    row = idx // 3  # 改为除以3
-    col = idx % 3   # 改为模3
+    row = idx // 3  
+    col = idx % 3   
     ax = axes[row, col]
     
     # 生成子图标识 (a, b, c, d, e, f)
@@ -114,7 +121,7 @@ for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
         # 对于需要beam-medial的指标
         if metric in ['discrepancy', 'nodes_count', 'edges_count']:
             algorithms_to_use = ['beam', 'beam-medial', 'delta', 'spars']
-            color_indices = [0, 1, 2, 3]  # beam用第0个颜色，beam-medial用第1个颜色
+            color_indices = [0, 1, 2, 3]  
         else:
             algorithms_to_use = ['beam', 'delta', 'spars']
             color_indices = [0, 2, 3] 
@@ -165,7 +172,7 @@ for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
         
     # 设置图形属性
     ax.set_xlabel(None, fontfamily='Times New Roman')
-    ax.set_ylabel(ylabel,  fontfamily='Times New Roman')
+    ax.set_ylabel(ylabel, fontfamily='Times New Roman')
     ax.set_title(title, fontfamily='Times New Roman')
     
     # 调整x轴标签位置
@@ -173,7 +180,7 @@ for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
         ax.set_xticks(x + 1.5 * width)
     else:
         ax.set_xticks(x + width)
-    ax.set_xticklabels([env.capitalize() for env in environments])
+    ax.set_xticklabels([environment_name_mapping.get(env, env.capitalize()) for env in environments])
     
     # 设置刻度标签字体
     for label in ax.get_xticklabels():
@@ -187,7 +194,7 @@ for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
         legend = ax.legend(frameon=True, fancybox=True, shadow=True, 
                           loc='upper left', bbox_to_anchor=(0.02, 0.98))
     else:
-        # 对于discrepancy，图例放在右上角
+        # 对于其他指标，图例放在右上角
         legend = ax.legend(frameon=True, fancybox=True, shadow=True, 
                           loc='upper right', bbox_to_anchor=(0.98, 0.98))
     
@@ -199,18 +206,18 @@ for idx, (metric, title, ylabel, data_source) in enumerate(metrics_info):
     ax.set_ylim(bottom=0)
     
     # 添加子图标识 (a), (b), (c), (d), (e), (f) 在图的正下方
-    ax.text(0.5, -0.12, f'({subplot_label})', 
+    ax.text(0.5, -0.1, f'({subplot_label})', 
             transform=ax.transAxes, 
-            fontsize=26,  # 与其他字体大小相同, 
+            fontsize=26,  
             fontfamily='Times New Roman',
             verticalalignment='top',
             horizontalalignment='center')
 
-# 调整布局 - 增加子图间距以适应更大的字体和下方标识
-plt.tight_layout(pad=2.0)  # 增加间距
-plt.subplots_adjust(bottom=0.1)  # 为底部标识留出空间
+# 调整布局 - 减小间距使图更紧凑
+plt.tight_layout(pad=1.0, h_pad=2.0, w_pad=1.0)  # 减小pad从2.0到1.0，减小h_pad
+plt.subplots_adjust(bottom=0.08, hspace=0.3, wspace=0.25)  # 减小hspace行间距，减小bottom
+
 plt.savefig(os.path.join(charts_dir, 'comprehensive_analysis.pdf'), 
             dpi=300, bbox_inches='tight')
-
 
 print(f"\n图像已保存到: {charts_dir}/comprehensive_analysis.pdf")

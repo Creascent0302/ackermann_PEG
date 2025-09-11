@@ -36,6 +36,13 @@ grouped_data = data.groupby(['algorithm', 'environment']).agg({
 print("=== Grouped Data Summary ===")
 print(grouped_data.round(4))
 
+# 在设置x轴标签的部分，添加环境名称映射
+environment_name_mapping = {
+    'maze': 'Maze',
+    'indoor': 'Indoor', 
+    'random': 'Cluttered'  # 将random映射为Cluttered
+}
+
 # 为每个指标画图
 for idx, (metric, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     ax = axes[idx]
@@ -75,8 +82,15 @@ for idx, (metric, title, ylabel) in enumerate(zip(metrics, titles, y_labels)):
     ax.set_xlabel('Environment', fontweight='bold')
     ax.set_ylabel(ylabel, fontweight='bold')
     ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xticks(x + width)
-    ax.set_xticklabels([env.capitalize() for env in environments])
+    
+    # 调整x轴标签位置
+    if len(algorithms) == 4:
+        ax.set_xticks(x + 1.5 * width)
+    else:
+        ax.set_xticks(x + width)
+    
+    # 修改这一行，使用映射而不是直接capitalize
+    ax.set_xticklabels([environment_name_mapping.get(env, env.capitalize()) for env in environments])
     ax.legend(frameon=True, fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--')
     

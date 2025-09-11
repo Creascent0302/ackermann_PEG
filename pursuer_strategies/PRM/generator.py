@@ -1517,11 +1517,17 @@ class PRMRenderer:
                 continue
             x1, y1 = a
             x2, y2 = b
+            line_width=1
+            if algorithm == "spars":
+                if env == "random":
+                    line_width = 2
+                else:
+                    line_width = 3
             pygame.draw.line(self.screen, (158, 176, 204) if algorithm == "beam" else (40, 100, 180),
                             (int(x1 * self.cell_size / ENV_CONFIG['cell_size']),
                             int(y1 * self.cell_size / ENV_CONFIG['cell_size'])),
                             (int(x2 * self.cell_size / ENV_CONFIG['cell_size']),
-                            int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), 1)
+                            int(y2 * self.cell_size / ENV_CONFIG['cell_size'])), line_width)
 
         # 中轴骨架路径
         drawn_seg = set()
@@ -1566,7 +1572,7 @@ class PRMRenderer:
                     radius = self.cell_size // 4
             else:
                 color = (255, 185, 153) if algorithm == "beam" else (255, 91, 0)  # 红色: 普通
-                radius = self.cell_size // 4
+                radius = self.cell_size // 3 if algorithm == "spars" and env != "random" else self.cell_size // 4
             pygame.draw.circle(self.screen, color, pos, radius)
         if not self.headless:
             pygame.display.flip()

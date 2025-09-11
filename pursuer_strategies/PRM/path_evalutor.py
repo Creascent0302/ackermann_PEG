@@ -37,10 +37,10 @@ class PathPRMRenderer(PRMRenderer):
     """扩展PRMRenderer以支持路径可视化"""
     
     def render_path(self, nodes, edges, obstacles, path_nodes, path_edges, 
-                   medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+                   medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None, environment_type="random", algorithm="delta"):
         """渲染PRM和路径"""
         # 首先渲染基本的PRM
-        screen = self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+        screen = self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths, environment_type, algorithm)
         
         # 再渲染路径（如果有）
         if path_nodes and path_edges:
@@ -77,16 +77,13 @@ class PathPRMRenderer(PRMRenderer):
             
         return screen
     
-    def save_path_image(self, nodes, edges, obstacles, path_nodes, path_edges, filepath,
-                       medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+    def save_path_image(self, nodes, edges, obstacles, path_nodes, path_edges, filepath, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None, environment_type="random", algorithm="delta"):
         """渲染并保存带路径的图像"""
-        screen = self.render_path(nodes, edges, obstacles, path_nodes, path_edges,
-                                 medial_axis_nodes, medial_axis_edges, medial_axis_paths)
+        screen = self.render_path(nodes, edges, obstacles, path_nodes, path_edges, medial_axis_nodes, medial_axis_edges, medial_axis_paths, environment_type, algorithm)
         save_pdf_image(screen, filepath)
         # print(f"路径图像已保存到: {filepath}")
     
-    def run_with_path(self, nodes, edges, obstacles, path_nodes, path_edges,
-                 medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
+    def run_with_path(self, nodes, edges, obstacles, path_nodes, path_edges, medial_axis_nodes=None, medial_axis_edges=None, medial_axis_paths=None):
         """运行带路径的渲染器（交互模式）"""
         running = True
         
@@ -162,9 +159,15 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
         total_cells = grid_width * grid_height
         num_obstacles = int(total_cells * 0.25)
         obstacles = []
+        for i in range(grid_width):
+            obstacles.append((i, 0))
+            obstacles.append((i, grid_height - 1))
+            obstacles.append((0, i))
+            obstacles.append((grid_width - 1, i))
+
         while len(obstacles) < num_obstacles:
-            x = np.random.randint(0, grid_width)
-            y = np.random.randint(0, grid_height)
+            x = np.random.randint(1, grid_width - 1)
+            y = np.random.randint(1, grid_height - 1)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
     else:
@@ -279,9 +282,8 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
             
             # 渲染并保存路径图像
             renderer = PathPRMRenderer(grid_width, grid_height, headless=True)
-            renderer.save_path_image(nodes, edges, obstacles, path_nodes, path_edges, 
-                                   filepath, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
-    
+            renderer.save_path_image(nodes, edges, obstacles, path_nodes, path_edges, filepath, medial_axis_nodes, medial_axis_edges, medial_axis_paths, environment_type, algorithm_name)
+
     # 保存所有指标到CSV
     metrics_file = os.path.join(base_results_path, f"path_metrics_{environment_type}.csv")
     os.makedirs(os.path.dirname(metrics_file), exist_ok=True)
@@ -468,16 +470,22 @@ def demo_path_planning(algorithm_name="beam", environment_type="maze", seed=42, 
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
         connection_radius = 1.5
     elif environment_type == "random":
-        ENV_CONFIG['gridnum_width'] = 30
-        ENV_CONFIG['gridnum_height'] = 30
+        ENV_CONFIG['gridnum_width'] = 40
+        ENV_CONFIG['gridnum_height'] = 40
         grid_width = ENV_CONFIG['gridnum_width']
         grid_height = ENV_CONFIG['gridnum_height']
         total_cells = grid_width * grid_height
         num_obstacles = int(total_cells * 0.25)
         obstacles = []
+        for i in range(grid_width):
+            obstacles.append((i, 0))
+            obstacles.append((i, grid_height - 1))
+            obstacles.append((0, i))
+            obstacles.append((grid_width - 1, i))
+
         while len(obstacles) < num_obstacles:
-            x = np.random.randint(0, grid_width)
-            y = np.random.randint(0, grid_height)
+            x = np.random.randint(1, grid_width - 1)
+            y = np.random.randint(1, grid_height - 1)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
         connection_radius = 1.0

@@ -225,27 +225,27 @@ class BasePathPlanner(ABC):
             y1 = min(points[i, 0, 1], points[i, 1, 1])
             y2 = max(points[i, 0, 1], points[i, 1, 1])
             
-            # 计算矩形面积并检查是否超限
-            rect_area = (x2 - x1) * (y2 - y1)
+            # # 计算矩形面积并检查是否超限
+            # rect_area = (x2 - x1) * (y2 - y1)
             
-            # 如果面积超过限制，缩小矩形保持中心点不变
-            if rect_area > max_area:
-                # 计算矩形中心
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
+            # # 如果面积超过限制，缩小矩形保持中心点不变
+            # if rect_area > max_area:
+            #     # 计算矩形中心
+            #     center_x = (x1 + x2) / 2
+            #     center_y = (y1 + y2) / 2
                 
-                # 计算缩放因子
-                scale = math.sqrt(max_area / rect_area)
+            #     # 计算缩放因子
+            #     scale = math.sqrt(max_area / rect_area)
                 
-                # 计算新的半宽和半高
-                half_width = (x2 - x1) / 2 * scale
-                half_height = (y2 - y1) / 2 * scale
+            #     # 计算新的半宽和半高
+            #     half_width = (x2 - x1) / 2 * scale
+            #     half_height = (y2 - y1) / 2 * scale
                 
-                # 更新矩形坐标
-                x1 = center_x - half_width
-                x2 = center_x + half_width
-                y1 = center_y - half_height
-                y2 = center_y + half_height
+            #     # 更新矩形坐标
+            #     x1 = center_x - half_width
+            #     x2 = center_x + half_width
+            #     y1 = center_y - half_height
+            #     y2 = center_y + half_height
             
             # 计算面积比例
             area_rate = (x2 - x1) * (y2 - y1) / total_area

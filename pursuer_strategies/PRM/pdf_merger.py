@@ -29,7 +29,7 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
     # 算法名称映射
     algorithm_mapping = {
         'beam': 'BS-PRM',
-        'delta': 'Delta-PRM', 
+        'delta': '  -PRM', 
         'spars': 'SPARS'
     }
     
@@ -37,7 +37,7 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
     environment_mapping = {
         'indoor': 'Indoor',
         'maze': 'Maze',
-        'random': 'Random'
+        'random': 'Cluttered'
     }
     
     for i, pdf_file in enumerate(pdf_files):
@@ -138,9 +138,9 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
 def main():
     # 您的PDF文件列表
     pdf_files = [
-        "pursuer_strategies/PRM/results/random/beam_random_114.pdf",
-        "pursuer_strategies/PRM/results/random/delta_random_114.pdf", 
-        "pursuer_strategies/PRM/results/random/spars_random_114.pdf",
+        "pursuer_strategies/PRM/results/random/beam_random_520.pdf",
+        "pursuer_strategies/PRM/results/random/delta_random_520.pdf", 
+        "pursuer_strategies/PRM/results/random/spars_random_520.pdf",
         "pursuer_strategies/PRM/results/maze/beam_maze_114.pdf",
         "pursuer_strategies/PRM/results/maze/delta_maze_114.pdf",
         "pursuer_strategies/PRM/results/maze/spars_maze_114.pdf",

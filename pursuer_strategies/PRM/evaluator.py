@@ -67,9 +67,14 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         total_cells = grid_width * grid_height
         num_obstacles = int(total_cells * 0.25)
         obstacles = []
+        for i in range(grid_width):
+            obstacles.append((i, 0))
+            obstacles.append((i, grid_height - 1))
+            obstacles.append((0, i))
+            obstacles.append((grid_width - 1, i))
         while len(obstacles) < num_obstacles:
-            x = np.random.randint(0, grid_width)
-            y = np.random.randint(0, grid_height)
+            x = np.random.randint(1, grid_width - 1)
+            y = np.random.randint(1, grid_height - 1)
             if (x, y) not in obstacles:
                 obstacles.append((x, y))
     else:
