@@ -91,17 +91,17 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         elif environment_type == "maze":
             generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.3)
         elif environment_type == "indoor":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100, delta_radius=0.3)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.4, max_failures=100, delta_radius=0.3)
     elif algorithm_name == "beam":
         if environment_type == "random":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.2,
-                               beam_angle_step_deg=2, beam_ray_step=0.08,
-                               min_connection_radius=0.25)
+                               beam_angle_step_deg=2.6, beam_ray_step=0.08,
+                               min_connection_radius=0.3)
         elif environment_type == "maze":
             generator = BeamPRM(grid_width, grid_height, obstacles,
-                               num_nodes=num_nodes, connection_radius=1.5,
-                               beam_angle_step_deg=25, beam_ray_step=0.2,
+                               num_nodes=num_nodes, connection_radius=1.2,
+                               beam_angle_step_deg=30, beam_ray_step=0.25,
                                min_connection_radius=0.3)
         elif environment_type == "indoor":
             generator = BeamPRM(grid_width, grid_height, obstacles,

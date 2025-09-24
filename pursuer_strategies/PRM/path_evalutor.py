@@ -191,23 +191,21 @@ def test_path_planning(algorithm_name, environment_type, seed, num_path_tests=10
         elif environment_type == "maze":
             generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.6, max_failures=100, delta_radius=0.3)
         elif environment_type == "indoor":
-            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.0, max_failures=100, delta_radius=0.3)
-    # elif algorithm_name == "star":
-    #     generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=num_nodes, gamma_prm_star=15.0)
+            generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=num_nodes, connection_radius=1.4, max_failures=100, delta_radius=0.3)
     elif algorithm_name == "beam":
         if environment_type == "random":
             generator = BeamPRM(grid_width, grid_height, obstacles,
                                num_nodes=num_nodes, connection_radius=1.2,
-                               beam_angle_step_deg=2, beam_ray_step=0.08,
-                               min_connection_radius=0.25)
+                               beam_angle_step_deg=2.6, beam_ray_step=0.08,
+                               min_connection_radius=0.3)
         elif environment_type == "maze":
             generator = BeamPRM(grid_width, grid_height, obstacles,
-                               num_nodes=num_nodes, connection_radius=1.5,
-                               beam_angle_step_deg=25, beam_ray_step=0.2,
-                               min_connection_radius=0.4)
+                               num_nodes=num_nodes, connection_radius=1.2,
+                               beam_angle_step_deg=30, beam_ray_step=0.25,
+                               min_connection_radius=0.3)
         elif environment_type == "indoor":
             generator = BeamPRM(grid_width, grid_height, obstacles,
-                               num_nodes=num_nodes, connection_radius=2,
+                               num_nodes=num_nodes, connection_radius=2.0,
                                beam_angle_step_deg=25, beam_ray_step=0.2,
                                min_connection_radius=0.4)
     elif algorithm_name == "spars":
