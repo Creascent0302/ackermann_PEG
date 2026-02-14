@@ -1,0 +1,212 @@
+[
+  {
+    "algorithm": "delta",
+    "environment": "maze",
+    "seed": 43,
+    "prm_gen_time": 0.6263012886047363,
+    "success_rate": 1.0,
+    "avg_path_length": 19.41749458120276,
+    "avg_search_time": 0.11222409009933472,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "maze",
+    "seed": 114,
+    "prm_gen_time": 0.706146240234375,
+    "success_rate": 1.0,
+    "avg_path_length": 20.28901071524399,
+    "avg_search_time": 0.11158383369445801,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "maze",
+    "seed": 520,
+    "prm_gen_time": 0.6893057823181152,
+    "success_rate": 1.0,
+    "avg_path_length": 22.893977806965424,
+    "avg_search_time": 0.11741533756256103,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "maze",
+    "seed": 43,
+    "prm_gen_time": 0.5822584629058838,
+    "success_rate": 1.0,
+    "avg_path_length": 19.190150026797518,
+    "avg_search_time": 0.055556700229644776,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "maze",
+    "seed": 114,
+    "prm_gen_time": 0.5175318717956543,
+    "success_rate": 1.0,
+    "avg_path_length": 20.191817665384864,
+    "avg_search_time": 0.055237581729888914,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "maze",
+    "seed": 520,
+    "prm_gen_time": 0.5156228542327881,
+    "success_rate": 1.0,
+    "avg_path_length": 22.623362625919835,
+    "avg_search_time": 0.06262550115585327,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "maze",
+    "seed": 43,
+    "prm_gen_time": 1.591670036315918,
+    "success_rate": 1.0,
+    "avg_path_length": 19.191839810612308,
+    "avg_search_time": 0.070228853225708,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "maze",
+    "seed": 114,
+    "prm_gen_time": 3.067396402359009,
+    "success_rate": 1.0,
+    "avg_path_length": 20.06035514808717,
+    "avg_search_time": 0.07778601408004761,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "maze",
+    "seed": 520,
+    "prm_gen_time": 0.7695963382720947,
+    "success_rate": 1.0,
+    "avg_path_length": 22.902883229009184,
+    "avg_search_time": 0.07391855955123901,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "indoor",
+    "seed": 42,
+    "prm_gen_time": 0.6439638137817383,
+    "success_rate": 1.0,
+    "avg_path_length": 7.748026671271752,
+    "avg_search_time": 0.15461915969848633,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "indoor",
+    "seed": 42,
+    "prm_gen_time": 0.6884884834289551,
+    "success_rate": 1.0,
+    "avg_path_length": 7.913533345117271,
+    "avg_search_time": 0.030552289485931396,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "indoor",
+    "seed": 42,
+    "prm_gen_time": 2.276597261428833,
+    "success_rate": 1.0,
+    "avg_path_length": 7.808362014832139,
+    "avg_search_time": 0.04595606565475464,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "random",
+    "seed": 43,
+    "prm_gen_time": 2.0331661701202393,
+    "success_rate": 0.96,
+    "avg_path_length": 4.405031106973373,
+    "avg_search_time": 0.1477304274837176,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "random",
+    "seed": 114,
+    "prm_gen_time": 1.9650616645812988,
+    "success_rate": 1.0,
+    "avg_path_length": 4.658675264050642,
+    "avg_search_time": 0.14075712442398072,
+    "test_count": 100
+  },
+  {
+    "algorithm": "delta",
+    "environment": "random",
+    "seed": 520,
+    "prm_gen_time": 2.0074994564056396,
+    "success_rate": 0.99,
+    "avg_path_length": 4.397798561245373,
+    "avg_search_time": 0.13975324775233414,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "random",
+    "seed": 43,
+    "prm_gen_time": 2.0662920475006104,
+    "success_rate": 0.96,
+    "avg_path_length": 4.490805782088981,
+    "avg_search_time": 0.059360623359680176,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "random",
+    "seed": 114,
+    "prm_gen_time": 1.8550522327423096,
+    "success_rate": 1.0,
+    "avg_path_length": 4.756334746388705,
+    "avg_search_time": 0.05379831552505493,
+    "test_count": 100
+  },
+  {
+    "algorithm": "beam",
+    "environment": "random",
+    "seed": 520,
+    "prm_gen_time": 1.7360615730285645,
+    "success_rate": 0.99,
+    "avg_path_length": 4.52702910327182,
+    "avg_search_time": 0.051120712299539586,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "random",
+    "seed": 43,
+    "prm_gen_time": 3.6775197982788086,
+    "success_rate": 1.0,
+    "avg_path_length": 4.5707983758766,
+    "avg_search_time": 0.09945403337478638,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "random",
+    "seed": 114,
+    "prm_gen_time": 3.637988567352295,
+    "success_rate": 0.99,
+    "avg_path_length": 4.649281312851939,
+    "avg_search_time": 0.09088396062754621,
+    "test_count": 100
+  },
+  {
+    "algorithm": "spars",
+    "environment": "random",
+    "seed": 520,
+    "prm_gen_time": 3.6469361782073975,
+    "success_rate": 0.99,
+    "avg_path_length": 4.428039293468843,
+    "avg_search_time": 0.08707065774936869,
+    "test_count": 100
+  }
+]
