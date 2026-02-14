@@ -136,6 +136,16 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
     generation_time = end_time - start_time
     dispersion = generator.cal_dispersion() if generator else 0.0
     discrepancy = generator.cal_discrepancy() if generator else 0.0
+    
+    # 计算节点利用率
+    print("  计算节点利用率...")
+    utilization_result = generator.calculate_node_utilization(num_test_paths=20) if generator else None
+    if utilization_result:
+        node_utilization = utilization_result['avg_utilization']
+        avg_nodes_per_path = utilization_result['avg_nodes_per_path']
+    else:
+        node_utilization = 0.0
+        avg_nodes_per_path = 0.0
 
     # 计算beam算法中轴图的指标
     if algorithm_name == "beam" and medial_axis_all_nodes and medial_axis_edges:
@@ -161,6 +171,8 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
         'edges_count': len(edges),
         'dispersion': round(dispersion, 4),
         'discrepancy': round(discrepancy, 4),
+        'node_utilization': round(node_utilization, 4),
+        'avg_nodes_per_path': round(avg_nodes_per_path, 2),
         'medial_axis_nodes_count': medial_axis_nodes_count,
         'medial_axis_edges_count': medial_axis_edges_count,
         'medial_axis_dispersion': round(medial_dispersion, 4),
@@ -230,7 +242,7 @@ def run_full_evaluation():
         writer.writerow([
             'algorithm', 'environment', 'seed',
             'generation_time', 'nodes_count', 'edges_count',
-            'dispersion', 'discrepancy',
+            'dispersion', 'discrepancy', 'node_utilization', 'avg_nodes_per_path',
             'medial_axis_nodes_count', 'medial_axis_edges_count',
             'medial_axis_dispersion', 'medial_axis_discrepancy'
         ])
@@ -264,6 +276,8 @@ def run_full_evaluation():
                                     metrics['edges_count'],
                                     metrics['dispersion'],
                                     metrics['discrepancy'],
+                                    metrics['node_utilization'],
+                                    metrics['avg_nodes_per_path'],
                                     metrics['medial_axis_nodes_count'],
                                     metrics['medial_axis_edges_count'],
                                     metrics['medial_axis_dispersion'],

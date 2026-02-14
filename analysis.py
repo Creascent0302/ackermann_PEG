@@ -18,20 +18,21 @@ colors = {
 
 # 设置图形样式
 plt.rcParams.update({'font.size': 10})
-fig, axes = plt.subplots(2, 3, figsize=(18, 12))  # 2行3列布局
+fig, axes = plt.subplots(2, 4, figsize=(24, 12))  # 2行4列布局
 
 # 指标列表和标题
 metrics = [
     ('nodes_count', 'Number of Nodes', 'Node Count'),
     ('edges_count', 'Number of Edges', 'Edge Count'),
     ('dispersion', 'Dispersion Score', 'Dispersion'),
-    ('discrepancy', 'Discrepancy Score', 'Discrepancy')
+    ('discrepancy', 'Discrepancy Score', 'Discrepancy'),
+    ('generation_time', 'Generation Time', 'Time (s)'),
+    ('node_utilization', 'Node Utilization', 'Utilization (%)'),
+    ('avg_nodes_per_path', 'Avg Nodes Per Path', 'Nodes')
 ]
-# 只对这四个指标加beam-medial
+# 前四个指标加beam-medial
 
-other_metrics = [
-    ('generation_time', 'Generation Time', 'Time (s)')
-]
+other_metrics = []
 
 # 环境和算法列表
 environments = ['maze', 'indoor', 'random']
@@ -64,7 +65,7 @@ print(beam_medial_df)
 
 # 合并beam-medial到原始数据
 plot_data = pd.concat([
-    data[['algorithm', 'environment', 'seed', 'nodes_count', 'edges_count', 'dispersion', 'discrepancy']],
+    data[['algorithm', 'environment', 'seed', 'nodes_count', 'edges_count', 'dispersion', 'discrepancy', 'generation_time', 'node_utilization', 'avg_nodes_per_path']],
     beam_medial_df
 ], ignore_index=True)
 
@@ -73,7 +74,10 @@ grouped_data = plot_data.groupby(['algorithm', 'environment']).agg({
     'nodes_count': 'mean',
     'edges_count': 'mean',
     'dispersion': 'mean',
-    'discrepancy': 'mean'
+    'discrepancy': 'mean',
+    'generation_time': 'mean',
+    'node_utilization': 'mean',
+    'avg_nodes_per_path': 'mean'
 }).reset_index()
 
 print("\n=== Grouped Data Summary ===")
@@ -82,28 +86,38 @@ print(grouped_data.round(4))
 charts_dir = './pursuer_strategies/PRM/results/charts'
 os.makedirs(charts_dir, exist_ok=True)
 
-# 画四个含beam-medial的指标
+# 画所有指标
 for idx, (metric, title, ylabel) in enumerate(metrics):
-    row = idx // 3
-    col = idx % 3
+    if idx >= 8:  # 最多8个子图
+        break
+    row = idx // 4
+    col = idx % 4
     ax = axes[row, col]
+    
+    # 前4个指标使用 beam-medial，后面的指标不使用
+    use_medial = idx < 4
+    current_algos = algorithms_with_medial if use_medial else algorithms
     
     env_data = []
     for env in environments:
         env_subset = grouped_data[grouped_data['environment'] == env]
         metric_values = []
-        for algo in algorithms_with_medial:
+        for algo in current_algos:
             algo_data = env_subset[env_subset['algorithm'] == algo][metric]
             if not algo_data.empty:
-                metric_values.append(algo_data.iloc[0])
+                value = algo_data.iloc[0]
+                # 节点利用率转换为百分比
+                if metric == 'node_utilization':
+                    value = value * 100
+                metric_values.append(value)
             else:
                 metric_values.append(0)
         env_data.append(metric_values)
     
     x = np.arange(len(environments))
-    width = 0.18
+    width = 0.18 if use_medial else 0.25
     
-    for i, algo in enumerate(algorithms_with_medial):
+    for i, algo in enumerate(current_algos):
         values = [env_data[j][i] for j in range(len(environments))]
         bars = ax.bar(x + i * width, values, width,
                       label=algo.upper(), color=colors.get(algo, '#888888'), alpha=0.8,
@@ -115,6 +129,9 @@ for idx, (metric, title, ylabel) in enumerate(metrics):
                 if metric in ['dispersion', 'discrepancy']:
                     ax.text(bar.get_x() + bar.get_width()/2., height,
                             f'{height:.4f}', ha='center', va='bottom', fontsize=8)
+                elif metric in ['node_utilization', 'avg_nodes_per_path']:
+                    ax.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{height:.2f}', ha='center', va='bottom', fontsize=8)
                 else:
                     ax.text(bar.get_x() + bar.get_width()/2., height,
                             f'{int(height)}', ha='center', va='bottom', fontsize=8)
@@ -122,51 +139,19 @@ for idx, (metric, title, ylabel) in enumerate(metrics):
     ax.set_xlabel('Environment', fontweight='bold')
     ax.set_ylabel(ylabel, fontweight='bold')
     ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xticks(x + 1.5 * width)
+    offset = 1.5 * width if use_medial else width
+    ax.set_xticks(x + offset)
     ax.set_xticklabels([env.capitalize() for env in environments])
     ax.legend(frameon=True, fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.set_ylim(bottom=0)
 
-# 画generation_time（不含beam-medial）
-metric, title, ylabel = other_metrics[0]
-ax = axes[1, 1]
-env_data = []
-for env in environments:
-    env_subset = data[data['environment'] == env]
-    metric_values = []
-    for algo in algorithms:
-        algo_data = env_subset[env_subset['algorithm'] == algo][metric]
-        if not algo_data.empty:
-            metric_values.append(algo_data.mean())
-        else:
-            metric_values.append(0)
-    env_data.append(metric_values)
-
-x = np.arange(len(environments))
-width = 0.25
-for i, algo in enumerate(algorithms):
-    values = [env_data[j][i] for j in range(len(environments))]
-    bars = ax.bar(x + i * width, values, width,
-                  label=algo.upper(), color=colors[algo], alpha=0.8,
-                  edgecolor='black', linewidth=0.5)
-    for bar in bars:
-        height = bar.get_height()
-        if height > 0:
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{height:.2f}', ha='center', va='bottom', fontsize=8)
-
-ax.set_xlabel('Environment', fontweight='bold')
-ax.set_ylabel(ylabel, fontweight='bold')
-ax.set_title(title, fontsize=14, fontweight='bold')
-ax.set_xticks(x + width)
-ax.set_xticklabels([env.capitalize() for env in environments])
-ax.legend(frameon=True, fancybox=True, shadow=True)
-ax.grid(True, alpha=0.3, linestyle='--')
-ax.set_ylim(bottom=0)
-
-# 隐藏最后一个子图
-axes[1, 2].axis('off')
+# 隐藏未使用的子图（如果有的话）
+if len(metrics) < 8:
+    for idx in range(len(metrics), 8):
+        row = idx // 4
+        col = idx % 4
+        axes[row, col].axis('off')
 
 # 调整布局
 plt.tight_layout()
@@ -181,10 +166,15 @@ for env in environments:
     env_data = grouped_data[grouped_data['environment'] == env]
     for _, row in env_data.iterrows():
         print(f"  {row['algorithm'].upper()}:")
-        if row['algorithm'] == 'beam-medial':
-            print(f"    Nodes Count: {int(row['nodes_count'])}")
-            print(f"    Edges Count: {int(row['edges_count'])}")
-            print(f"    Dispersion: {row['dispersion']:.4f}")
-            print(f"    Discrepancy: {row['discrepancy']:.4f}")
+        print(f"    Nodes Count: {int(row['nodes_count'])}")
+        print(f"    Edges Count: {int(row['edges_count'])}")
+        print(f"    Dispersion: {row['dispersion']:.4f}")
+        print(f"    Discrepancy: {row['discrepancy']:.4f}")
+        if 'generation_time' in row:
+            print(f"    Generation Time: {row['generation_time']:.4f}s")
+        if 'node_utilization' in row:
+            print(f"    Node Utilization: {row['node_utilization']*100:.2f}%")
+        if 'avg_nodes_per_path' in row:
+            print(f"    Avg Nodes Per Path: {row['avg_nodes_per_path']:.2f}")
 
 print(f"\n图像已保存到: {charts_dir}/prm_metrics_analysis.png")

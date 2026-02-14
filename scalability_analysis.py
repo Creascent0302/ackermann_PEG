@@ -33,7 +33,7 @@ plt.rcParams['legend.fontsize'] = 12
 charts_dir = './pursuer_strategies/PRM/results/charts'
 os.makedirs(charts_dir, exist_ok=True)
 
-# 定义要绘制的指标
+# 定义要绘制的指标（共8个，2×4布局）
 metrics_config = [
     {
         'column': 'generation_time',
@@ -74,6 +74,19 @@ metrics_config = [
         'ylabel': 'Success Rate (%)',
         'filename': 'scalability_success_rate.png',
         'is_rate': True  # path_success 现在直接存的是百分比
+    },
+    {
+        'column': 'dispersion',
+        'title': 'Dispersion vs Number of Nodes',
+        'ylabel': 'Dispersion',
+        'filename': 'scalability_dispersion.png'
+    },
+    {
+        'column': 'node_utilization',
+        'title': 'Node Utilization vs Number of Nodes',
+        'ylabel': 'Node Utilization',
+        'filename': 'scalability_node_utilization.png',
+        'is_ratio': True  # 0-1 的比例值
     }
 ]
 
@@ -90,14 +103,14 @@ for env in environments:
     print(f"\n正在处理环境: {env}")
     env_data = data[data['environment'] == env]
     
-    # 创建图形 - 2行3列
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    # 创建图形 - 2行4列
+    fig, axes = plt.subplots(2, 4, figsize=(24, 12))
     fig.suptitle(f'Algorithm Scalability Analysis - {env.capitalize()} Environment', 
                  fontsize=20, fontweight='bold', y=0.995)
     
     for idx, metric_config in enumerate(metrics_config):
-        row = idx // 3
-        col = idx % 3
+        row = idx // 4
+        col = idx % 4
         ax = axes[row, col]
         
         metric_col = metric_config['column']
@@ -136,9 +149,13 @@ for env in environments:
                           label=algo.upper(), color=colors[algo])
             
             # 绘制标准差阴影 - 只在有多个数据点时绘制，并裁剪到合理范围
+            is_ratio = metric_config.get('is_ratio', False)
             if is_rate:
                 y_lower = np.clip(y - std, 0, 100)
                 y_upper = np.clip(y + std, 0, 100)
+            elif is_ratio:
+                y_lower = np.clip(y - std, 0, 1)
+                y_upper = np.clip(y + std, 0, 1)
             else:
                 y_lower = np.maximum(y - std, 0)  # 不低于0
                 y_upper = y + std
@@ -153,13 +170,15 @@ for env in environments:
         ax.grid(True, alpha=0.3, linestyle='--')
         
         # 设置合理的y轴范围
-        if not is_rate:
-            ax.set_ylim(bottom=0)
-        else:
+        is_ratio = metric_config.get('is_ratio', False)
+        if is_rate:
             ax.set_ylim(0, 105)  # 成功率0-100%
+        elif is_ratio:
+            ax.set_ylim(bottom=0)  # 利用率 0-1
+        else:
+            ax.set_ylim(bottom=0)
     
     # 调整布局并保存
-    plt.tight_layout()
     output_file = os.path.join(charts_dir, f'scalability_analysis_{env}.png')
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"  已保存: {output_file}")
@@ -210,9 +229,13 @@ for metric_config in metrics_config:
                    label=algo.upper(), color=colors[algo])
             
             # 绘制标准差阴影 - 裁剪到合理范围
+            is_ratio = metric_config.get('is_ratio', False)
             if is_rate:
                 y_lower = np.clip(y - std, 0, 100)
                 y_upper = np.clip(y + std, 0, 100)
+            elif is_ratio:
+                y_lower = np.clip(y - std, 0, 1)
+                y_upper = np.clip(y + std, 0, 1)
             else:
                 y_lower = np.maximum(y - std, 0)
                 y_upper = y + std
@@ -227,10 +250,12 @@ for metric_config in metrics_config:
         ax.legend(loc='best', frameon=True, fancybox=True, shadow=True)
         ax.grid(True, alpha=0.3, linestyle='--')
         
-        if not is_rate:
+        if is_rate:
+            ax.set_ylim(0, 105)
+        elif is_ratio:
             ax.set_ylim(bottom=0)
         else:
-            ax.set_ylim(0, 105)
+            ax.set_ylim(bottom=0)
     
     plt.tight_layout()
     output_file = os.path.join(charts_dir, filename)

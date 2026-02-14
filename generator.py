@@ -11,6 +11,11 @@ from base_generator import BasePathPlanner
 import time
 import os
 from collections import defaultdict
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 class BeamPRM(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
@@ -174,6 +179,63 @@ class BeamPRM(BasePathPlanner):
 
         self.node_explore_cones[node] = self._merge_intervals(kept)
 
+    def _bresenham_line(self, x0, y0, x1, y1):
+        """Bresenham 算法生成从 (x0,y0) 到 (x1,y1) 的格子坐标列表"""
+        cs = ENV_CONFIG['cell_size']
+        gx0, gy0 = int(x0 / cs), int(y0 / cs)
+        gx1, gy1 = int(x1 / cs), int(y1 / cs)
+        
+        dx = abs(gx1 - gx0)
+        dy = abs(gy1 - gy0)
+        sx = 1 if gx0 < gx1 else -1
+        sy = 1 if gy0 < gy1 else -1
+        err = dx - dy
+        
+        points = []
+        x, y = gx0, gy0
+        
+        while True:
+            points.append((x, y))
+            if x == gx1 and y == gy1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+        
+        return points
+    
+    def _fast_raycast(self, ex, ey, theta, max_range, ray_step):
+        """优化的 raycasting：使用 Bresenham 算法快速检测碰撞"""
+        dx, dy = math.cos(theta), math.sin(theta)
+        end_x = ex + max_range * dx
+        end_y = ey + max_range * dy
+        
+        # 使用 Bresenham 获取路径上的格子
+        grid_points = self._bresenham_line(ex, ey, end_x, end_y)
+        
+        cs = ENV_CONFIG['cell_size']
+        dr = 0.015
+        last_valid = 0.0
+        
+        for i, (gx, gy) in enumerate(grid_points):
+            # 检查边界
+            if gx < 0 or gx >= self.grid_width or gy < 0 or gy >= self.grid_height:
+                break
+            # 检查障碍物
+            if (gx, gy) in self.obstacles:
+                break
+            
+            # 计算实际距离
+            px = (gx + 0.5) * cs
+            py = (gy + 0.5) * cs
+            last_valid = math.hypot(px - ex, py - ey)
+        
+        return last_valid
+
     def _get_allowed_angles(self, node, step_deg=2):
         """返回该节点允许的角度数组（整数或浮点）。"""
         intervals = self.node_explore_cones.get(node)
@@ -204,26 +266,20 @@ class BeamPRM(BasePathPlanner):
         使用实例参数:
         beam_angle_step_deg: 光束角度步长
         beam_ray_step: 沿光束方向离散检测步长
-        其它逻辑保持不变。
+        优化: 使用 Bresenham 算法加速 raycasting
         """
         ex, ey = explore_node
         max_range = math.hypot(self.grid_width * ENV_CONFIG['cell_size'],
                             self.grid_height * ENV_CONFIG['cell_size'])
         ray_step = self.beam_ray_step
         angles = self._get_allowed_angles(explore_node, step_deg=self.beam_angle_step_deg)
+        
+        # 优化: 向量化计算所有角度
         distances = []
         for ang in angles:
             theta = math.radians(ang)
-            dx, dy = math.cos(theta), math.sin(theta)
-            t = 0.0
-            last_valid = 0.0
-            while t <= max_range:
-                px = ex + t * dx
-                py = ey + t * dy
-                if not self._is_valid_position(px, py):
-                    break
-                last_valid = t
-                t += ray_step
+            # 使用优化的 raycasting
+            last_valid = self._fast_raycast(ex, ey, theta, max_range, ray_step)
             distances.append(last_valid)
 
         new_nodes = []
@@ -470,12 +526,14 @@ class BeamPRM(BasePathPlanner):
 
     def identify_medial_axis(self):
         """
-        新策略:
+        优化策略:
         1. 将所有节点按 clearance 从大到小排序
         2. 选取第一个作为中轴
-        3. 依次尝试剩余节点: 若它与已选任一中轴节点具有 line-of-sight(无遮挡直线) 则跳过
-        否则加入中轴集合
+        3. 依次尝试剩余节点: 使用 KD-Tree 只检查局部邻域内的可见性
+           若在局部邻域内与已选节点可视则跳过，否则加入中轴集合
         4. 构建中轴边: 所有成对可视的中轴节点间的连接
+        
+        复杂度优化: O(N²) -> O(N log N)
         """
         if not self.nodes:
             self.medial_axis_nodes = set()
@@ -490,22 +548,45 @@ class BeamPRM(BasePathPlanner):
         )
 
         selected = []
+        # 优化: 使用自适应的搜索半径 (基于地图尺寸)
+        cs = ENV_CONFIG['cell_size']
+        search_radius = min(self.grid_width, self.grid_height) * cs * 0.3  # 局部邻域为地图尺寸的 30%
+        
         for node in ordered:
-            # 与已选任意节点可视则跳过
-            if any(self._has_line_of_sight(node, m) for m in selected):
-                continue
+            # 优化: 只检查局部邻域内的已选节点
+            if selected:
+                # 构建已选节点的 KD-Tree
+                selected_kdtree = KDTree(selected)
+                # 查找局部邻域内的节点
+                indices = selected_kdtree.query_ball_point(node, search_radius)
+                # 只检查局部邻域内的可见性
+                is_redundant = False
+                for idx in indices:
+                    if self._has_line_of_sight(node, selected[idx]):
+                        is_redundant = True
+                        break
+                if is_redundant:
+                    continue
             selected.append(node)
 
         self.medial_axis_nodes = set(selected)
 
-        # 构建中轴边 (仅当可视)
+        # 构建中轴边 (优化: 只检查局部邻域)
         maa = set()
-        sel_list = list(self.medial_axis_nodes)
-        for i in range(len(sel_list)):
-            for j in range(i + 1, len(sel_list)):
-                a, b = sel_list[i], sel_list[j]
-                if self._has_line_of_sight(a, b):
-                    maa.add((a, b) if a <= b else (b, a))
+        if len(self.medial_axis_nodes) > 1:
+            sel_list = list(self.medial_axis_nodes)
+            sel_kdtree = KDTree(sel_list)
+            
+            for i, node_a in enumerate(sel_list):
+                # 只检查局部邻域内的节点对
+                indices = sel_kdtree.query_ball_point(node_a, search_radius)
+                for j in indices:
+                    if j > i:  # 避免重复
+                        node_b = sel_list[j]
+                        if self._has_line_of_sight(node_a, node_b):
+                            edge = (node_a, node_b) if node_a <= node_b else (node_b, node_a)
+                            maa.add(edge)
+        
         self.medial_axis_edges = maa
 
     def _adjust_path_to_medial(self, path, adjacency_set, medial_set):
@@ -962,6 +1043,78 @@ class BeamPRM(BasePathPlanner):
                 break        
         return max_distance
 
+    def calculate_node_utilization(self, num_test_paths=50):
+        """
+        计算PRM中节点的平均利用率
+        通过随机生成多对起点和终点，计算路径中实际使用的节点占总节点数的比例
+        
+        对于 BeamPRM，由于路径规划使用的是 medial_axis_all_nodes（骨架节点），
+        所以统计的是骨架节点的利用率
+        
+        参数:
+            num_test_paths: 测试路径数量
+        
+        返回:
+            dict: 包含利用率统计信息
+                - avg_utilization: 平均利用率 (使用的节点数 / 总节点数)
+                - node_usage_count: 每个节点被使用的次数
+                - total_nodes: 总节点数
+                - used_nodes: 至少被使用一次的节点数
+                - successful_paths: 成功找到路径的数量
+                - avg_nodes_per_path: 平均每条路径使用的节点数
+        """
+        # 使用骨架节点进行统计（BeamPRM的路径规划基于骨架）
+        nodes_to_check = self.medial_axis_all_nodes if hasattr(self, 'medial_axis_all_nodes') and self.medial_axis_all_nodes else self.nodes
+        
+        if not nodes_to_check or len(nodes_to_check) < 2:
+            return {
+                'avg_utilization': 0.0,
+                'node_usage_count': {},
+                'total_nodes': 0,
+                'used_nodes': 0,
+                'successful_paths': 0,
+                'avg_nodes_per_path': 0.0
+            }
+        
+        # 记录每个节点被使用的次数
+        node_usage_count = {node: 0 for node in nodes_to_check}
+        successful_paths = 0
+        total_path_nodes = 0
+        
+        # 生成随机起点和终点对
+        valid_pairs = self.generate_valid_point_pairs(num_test_paths)
+        
+        for start, goal in valid_pairs:
+            try:
+                result = self.find_path(start, goal)
+                # find_path 返回 (path_nodes, path_edges, path_length, search_time)
+                if result and result[0] and len(result[0]) > 1:
+                    path = result[0]  # path_nodes
+                    successful_paths += 1
+                    # 统计路径中的节点使用情况（排除起点和终点，因为它们不在nodes中）
+                    for node in path:
+                        if node in node_usage_count:
+                            node_usage_count[node] += 1
+                    total_path_nodes += len([n for n in path if n in node_usage_count])
+            except Exception:
+                # 路径查找失败，跳过
+                continue
+        
+        # 计算统计信息
+        total_nodes = len(nodes_to_check)
+        used_nodes = sum(1 for count in node_usage_count.values() if count > 0)
+        avg_utilization = (used_nodes / total_nodes) if total_nodes > 0 else 0.0
+        avg_nodes_per_path = (total_path_nodes / successful_paths) if successful_paths > 0 else 0.0
+        
+        return {
+            'avg_utilization': avg_utilization,
+            'node_usage_count': node_usage_count,
+            'total_nodes': total_nodes,
+            'used_nodes': used_nodes,
+            'successful_paths': successful_paths,
+            'avg_nodes_per_path': avg_nodes_per_path
+        }
+    
     def cal_discrepancy(self, num_samples=1000, media=False):
         """
         计算节点集的星偏差度 (Star Discrepancy) - 性能优化版本。

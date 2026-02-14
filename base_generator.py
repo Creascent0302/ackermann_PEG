@@ -106,6 +106,71 @@ class BasePathPlanner(ABC):
     def generate_prm(self):
         """生成路径图 - 抽象方法，子类必须实现"""
         pass
+    
+    def calculate_node_utilization(self, num_test_paths=50):
+        """
+        计算PRM中节点的平均利用率
+        通过随机生成多对起点和终点，计算路径中实际使用的节点占总节点数的比例
+        
+        参数:
+            num_test_paths: 测试路径数量
+        
+        返回:
+            dict: 包含利用率统计信息
+        """
+        if not self.nodes or len(self.nodes) < 2:
+            return {
+                'avg_utilization': 0.0,
+                'node_usage_count': {},
+                'total_nodes': 0,
+                'used_nodes': 0,
+                'successful_paths': 0,
+                'avg_nodes_per_path': 0.0
+            }
+        
+        # 记录每个节点被使用的次数
+        node_usage_count = {node: 0 for node in self.nodes}
+        successful_paths = 0
+        total_path_nodes = 0
+        
+        # 生成随机起点和终点对
+        valid_pairs = self.generate_valid_point_pairs(num_test_paths)
+        
+        for start, goal in valid_pairs:
+            try:
+                result = self.find_path(start, goal)
+                # find_path 可能返回不同格式，兼容处理
+                if result:
+                    if isinstance(result, tuple) and len(result) >= 1:
+                        path = result[0]  # path_nodes
+                    else:
+                        path = result
+                    
+                    if path and len(path) > 1:
+                        successful_paths += 1
+                        # 统计路径中的节点使用情况
+                        for node in path:
+                            if node in node_usage_count:
+                                node_usage_count[node] += 1
+                        total_path_nodes += len([n for n in path if n in node_usage_count])
+            except Exception:
+                # 路径查找失败，跳过
+                continue
+        
+        # 计算统计信息
+        total_nodes = len(self.nodes)
+        used_nodes = sum(1 for count in node_usage_count.values() if count > 0)
+        avg_utilization = (used_nodes / total_nodes) if total_nodes > 0 else 0.0
+        avg_nodes_per_path = (total_path_nodes / successful_paths) if successful_paths > 0 else 0.0
+        
+        return {
+            'avg_utilization': avg_utilization,
+            'node_usage_count': node_usage_count,
+            'total_nodes': total_nodes,
+            'used_nodes': used_nodes,
+            'successful_paths': successful_paths,
+            'avg_nodes_per_path': avg_nodes_per_path
+        }
 
     def cal_dispersion(self, num_samples=1000, media=False):
         """

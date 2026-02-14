@@ -32,7 +32,8 @@ def save_scalability_metrics_to_file(metrics, filepath):
             writer.writerow([
                 'timestamp', 'algorithm', 'environment', 'num_nodes', 'seed',
                 'generation_time', 'actual_nodes_count', 'edges_count',
-                'path_length', 'path_nodes_count', 'search_time', 'path_success'
+                'path_length', 'path_nodes_count', 'search_time', 'path_success',
+                'dispersion', 'node_utilization'
             ])
         
         # 写入数据
@@ -48,7 +49,9 @@ def save_scalability_metrics_to_file(metrics, filepath):
             metrics['path_length'],
             metrics['path_nodes_count'],
             metrics['search_time'],
-            metrics['path_success']
+            metrics['path_success'],
+            metrics['dispersion'],
+            metrics['node_utilization']
         ])
 
 def generate_environment_obstacles(environment_type):
@@ -228,6 +231,13 @@ def run_scalability_test(algorithm_name, environment_type, num_nodes, seed, fixe
         path_nodes_count = 0
         search_time = 0.0
     
+    # 计算覆盖离散度
+    dispersion = generator.cal_dispersion(num_samples=500) if generator else 0.0
+    
+    # 计算节点利用率（增加测试路径数以减小标准差）
+    utilization_result = generator.calculate_node_utilization(num_test_paths=100) if generator else None
+    node_utilization = utilization_result['avg_utilization'] if utilization_result else 0.0
+    
     # 收集指标
     metrics = {
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -241,7 +251,9 @@ def run_scalability_test(algorithm_name, environment_type, num_nodes, seed, fixe
         'path_length': path_length,
         'path_nodes_count': path_nodes_count,
         'search_time': search_time,
-        'path_success': success_rate  # 现在是0-100的百分比
+        'path_success': success_rate,  # 0-100的百分比
+        'dispersion': round(dispersion, 4),
+        'node_utilization': round(node_utilization, 4)
     }
     
     return metrics
@@ -345,6 +357,8 @@ def main():
                         print(f"  - 实际节点数: {metrics['actual_nodes_count']}")
                         print(f"  - 边数: {metrics['edges_count']}")
                         print(f"  - 路径成功: {metrics['path_success']}")
+                        print(f"  - 离散度: {metrics['dispersion']:.4f}")
+                        print(f"  - 节点利用率: {metrics['node_utilization']*100:.1f}%")
                         if metrics['path_success']:
                             print(f"  - 路径长度: {metrics['path_length']:.3f}")
                             print(f"  - 搜索时间: {metrics['search_time']:.4f}s")
