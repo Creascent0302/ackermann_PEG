@@ -16,6 +16,7 @@ try:
     HAS_CV2 = True
 except ImportError:
     HAS_CV2 = False
+import random
 
 class BeamPRM(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
@@ -1596,7 +1597,7 @@ class SPARS(BasePathPlanner):
                                     self.add_sparse_edge(point, rep_point)
                                 failures = 0 # 更新了稀疏图，失败计数置零
                                 break
-                # 感觉原论文的情况四的伪代码有问题，前三种情况已经覆盖第四种情况，因此没有实现
+  
             failures += 1
         print(f"SPARS生成完成！")
         print(f"稀疏图节点数: {len(self.sparse_nodes)}")
@@ -1610,6 +1611,368 @@ class SPARS(BasePathPlanner):
                 if (v, u) not in self.edges:
                     self.edges.append((u, v))
         return self.nodes, self.edges                             
+
+class SPARS2(BasePathPlanner):
+    def __init__(self, grid_width, grid_height, obstacles, 
+                 num_nodes=2000,
+                 max_failures=500,
+                 visibility_radius=2.0,
+                 stretch_factor=3.0,
+                 delta=0.2,
+                 k=4,
+                 **kwargs):
+        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+
+        self.M = max_failures
+        self.Delta = visibility_radius
+        self.t_value = stretch_factor
+        self.delta = delta
+        self.k = k
+        self.max_samples = num_nodes 
+
+        self.sparse_nodes = []
+        self.sparse_adj = defaultdict(dict)
+        self.components = UnionFind()
+        self.interface_data = defaultdict(dict)
+
+    # ----------------------------------------------------------------
+    # 核心工具：寻找可见哨兵 (保持你的优化)
+    # ----------------------------------------------------------------
+    def _find_visible_guards(self, node, radius):
+        guards = []
+        r_sq = radius ** 2
+        
+        for g in self.sparse_nodes:
+            d_sq = (node[0] - g[0])**2 + (node[1] - g[1])**2
+            if d_sq <= r_sq:
+                if self._is_valid_edge(node, g):
+                    guards.append(g)
+        return guards
+
+    # ----------------------------------------------------------------
+    # 主流程
+    # ----------------------------------------------------------------
+    def generate_prm(self):
+        print(f"开始生成 SPARS2 (Delta={self.Delta}, t={self.t_value}, M={self.M})")
+        start_time = time.time()
+        
+        self.sparse_nodes = []
+        self.sparse_adj = defaultdict(dict)
+        self.components = UnionFind()
+        self.interface_data = defaultdict(dict)
+        
+        failures = 0
+        total_attempts = 0
+
+        while failures < self.M and total_attempts < self.max_samples:
+            total_attempts += 1
+            if total_attempts % 100 == 0:
+                print(f"采样: {total_attempts}/{self.max_samples}, 节点: {len(self.sparse_nodes)}")
+
+            # 1. 采样
+            rho = self._random_sample()
+            if rho is None: continue
+
+            # 2. 寻找可见哨兵
+            visible_guards = self._find_visible_guards(rho, self.Delta)
+
+            # 3. 覆盖准则 (Coverage)
+            if not visible_guards:
+                self._add_node(rho)
+                failures = 0
+                continue
+            
+            # 找到最近的哨兵 v
+            v = min(visible_guards, key=lambda n: self._distance(rho, n))
+
+            # 4. 连通性准则 (Connectivity)
+            comp_ids = {self.components.find(g) for g in visible_guards}
+            
+            if len(comp_ids) > 1:
+                # 连接不同的连通分量
+                self._add_node(rho)
+                for g in visible_guards:
+                    if self.components.find(g) != self.components.find(rho):
+                        if self._is_valid_edge(rho, g):
+                            self._add_edge(rho, g)
+                failures = 0
+                continue
+
+            # 5. 接口处理 (Interface)
+            # 尝试封闭接口，连接可见的两个哨兵
+            if len(visible_guards) >= 2:
+                sorted_guards = sorted(visible_guards, key=lambda n: self._distance(rho, n))
+                v1, v2 = sorted_guards[0], sorted_guards[1]
+                
+                if v1 != v2 and not self._has_edge(v1, v2):
+                    # 只有当成功添加了边/路径才重置 failures
+                    if self._close_interface(rho, v1, v2):
+                        failures = 0
+
+            # 6. 稀疏图路径优化 (Spanner Property)
+            if rho not in self.sparse_nodes:
+                Sigma, R = self._get_close_reps(rho, v)
+                
+                if R:
+                    added_change = False
+                    
+                    # 更新接口信息
+                    for r, sigma in zip(R, Sigma):
+                        self._update_points(rho, sigma, v, r)
+                        # 注意：这里应该是对称更新，但要注意参数顺序
+                        # 原论文逻辑暗示我们需要记录双向，这里假设无向图逻辑
+                        self._update_points(sigma, rho, r, v) # 这里可能有逻辑差异，暂时保留你的写法，重点修后面的add_path
+                    
+                    # 尝试添加路径
+                    if self._test_add_path(v):
+                        added_change = True
+                    
+                    for r in R:
+                        if self._test_add_path(r):
+                            added_change = True
+                    
+                    if added_change:
+                        failures = 0
+                    else:
+                        failures += 1
+                else:
+                    failures += 1
+            else:
+                failures = 0
+
+        self._sync_to_base()
+        print(f"完成。耗时: {time.time()-start_time:.2f}s, 节点: {len(self.nodes)}, 边: {len(self.edges)}")
+        return self.nodes, self.edges
+
+    # ----------------------------------------------------------------
+    # 算法辅助部分
+    # ----------------------------------------------------------------
+    def _get_close_reps(self, rho, v):
+        Sigma = []
+        R = []
+        for _ in range(self.k):
+            sigma = self._sample_near(rho, self.delta)
+            if not sigma: continue
+
+            if self._is_valid_edge(rho, sigma):
+                N_sigma = self._find_visible_guards(sigma, self.Delta)
+                
+                if not N_sigma:
+                    self._add_node(sigma)
+                    return [], []
+                
+                v_sigma = min(N_sigma, key=lambda n: self._distance(sigma, n))
+                
+                if v != v_sigma:
+                    Sigma.append(sigma)
+                    R.append(v_sigma)
+        return Sigma, R
+
+    def _update_points(self, rho, sigma, v, r):
+        v_neighbors = list(self.sparse_adj.get(v, {}).keys())
+        for r_prime in v_neighbors:
+            if r_prime == r: continue
+            if self._has_edge(r, r_prime): continue
+
+            key = frozenset({r, r_prime})
+            
+            # 使用 copy 防止直接修改引用导致的污染，直到确定要更新
+            data = self.interface_data[v].get(key, {
+                'dist': float('inf'),
+                'point_map': {} 
+            }).copy()
+            
+            # 这里的 point_map 也要 copy
+            data['point_map'] = data['point_map'].copy()
+            
+            stored_map = data['point_map']
+            other_side = stored_map.get(r_prime)
+            
+            new_dist = float('inf')
+            if other_side:
+                p_prime = other_side[0]
+                new_dist = self._distance(rho, p_prime)
+            
+            if other_side is None or new_dist < data['dist']:
+                stored_map[r] = (rho, sigma)
+                data['point_map'] = stored_map
+                
+                if other_side:
+                    data['dist'] = new_dist
+                    data['p'] = rho 
+                    data['p_prime'] = other_side[0]
+                    data['xi'] = sigma
+                    data['xi_prime'] = other_side[1]
+                
+                self.interface_data[v][key] = data
+
+    # ----------------------------------------------------------------
+    # 【关键修复】安全的路径添加逻辑
+    # ----------------------------------------------------------------
+    def _test_add_path(self, v):
+        if v not in self.interface_data: return False
+        success = False
+
+        # 转换为 list 避免迭代时修改字典错误
+        for key, data in list(self.interface_data[v].items()):
+            r_list = list(key)
+            if len(r_list) != 2: continue
+            r, r_prime = r_list[0], r_list[1]
+            
+            if self._has_edge(r, r_prime): continue
+            
+            if data['dist'] == float('inf') or 'p' not in data: continue
+
+            rho, rho_prime = data['p'], data['p_prime']
+            sigma, sigma_prime = data['xi'], data['xi_prime']
+            d_physical = data['dist']
+
+            # t-spanner 检查
+            d_graph = self._dijkstra(r, r_prime)
+            
+            if d_graph > self.t_value * d_physical:
+                # --- 开始事务性检查 ---
+                
+                # 1. 尝试直接加边 r -> r'
+                if self._is_valid_edge(r, r_prime):
+                    self._add_edge(r, r_prime)
+                    success = True
+                    continue # 成功则跳过后续复杂路径
+
+                # 2. 尝试添加复杂路径: r -> (sigma) -> rho -> v -> rho' -> (sigma') -> r'
+                # 我们先收集所有需要的边，验证全部通过后再添加
+                
+                edges_to_add = []
+                nodes_to_add = set()
+
+                # 段 1: r 到 rho
+                seg1 = self._get_safe_connection(r, rho, sigma)
+                if seg1 is None: continue # 路径不通，放弃
+                edges_to_add.extend(seg1)
+
+                # 段 2: rho 到 v (直接连)
+                if not self._is_valid_edge(rho, v): continue
+                edges_to_add.append((rho, v))
+
+                # 段 3: v 到 rho' (直接连)
+                if not self._is_valid_edge(v, rho_prime): continue
+                edges_to_add.append((v, rho_prime))
+
+                # 段 4: rho' 到 r'
+                seg4 = self._get_safe_connection(rho_prime, r_prime, sigma_prime)
+                if seg4 is None: continue
+                edges_to_add.extend(seg4)
+
+                # --- 所有检查通过，开始写入图 ---
+                self._add_node(rho)
+                self._add_node(rho_prime)
+                
+                # 将路径涉及的中间点加入节点集合
+                for u, w in edges_to_add:
+                    self._add_edge(u, w)
+                
+                success = True
+                
+        return success
+
+    def _get_safe_connection(self, start, end, helper):
+        """
+        尝试连接 start 和 end。
+        优先直连；如果直连碰撞，尝试通过 helper 连接。
+        如果在必须使用 helper 时 helper 的路径也碰撞，则返回 None。
+        返回: [(u1, v1), (u2, v2)...] 边列表
+        """
+        # 方案 A: 直连
+        if self._is_valid_edge(start, end):
+            return [(start, end)]
+        
+        # 方案 B: 通过 helper
+        # 必须确保 start->helper 和 helper->end 都是有效的！
+        if self._is_valid_edge(start, helper) and self._is_valid_edge(helper, end):
+            return [(start, helper), (helper, end)]
+        
+        # 方案 C: 彻底失败
+        return None
+
+    def _close_interface(self, rho, v1, v2):
+        """尝试连接接口 v1-v2，通过 rho 或直连"""
+        # 1. 尝试直连
+        if self._is_valid_edge(v1, v2):
+            self._add_edge(v1, v2)
+            return True
+        
+        # 2. 尝试通过 rho 桥接
+        # 必须检查 v1->rho 和 rho->v2 是否真的无碰撞
+        if self._is_valid_edge(v1, rho) and self._is_valid_edge(rho, v2):
+            self._add_node(rho)
+            self._add_edge(v1, rho)
+            self._add_edge(rho, v2)
+            return True
+            
+        return False
+
+    # ----------------------------------------------------------------
+    # 基础操作封装
+    # ----------------------------------------------------------------
+    def _add_node(self, node):
+        if node not in self.sparse_nodes:
+            self.sparse_nodes.append(node)
+            self.components.make_set(node)
+
+    def _add_edge(self, u, v):
+        if u == v: return
+        self._add_node(u)
+        self._add_node(v)
+        dist = self._distance(u, v)
+        self.sparse_adj[u][v] = dist
+        self.sparse_adj[v][u] = dist
+        self.components.union(u, v)
+        
+    def _has_edge(self, u, v):
+        return v in self.sparse_adj.get(u, {})
+
+    def _sample_near(self, node, radius):
+        r = radius * math.sqrt(random.random())
+        theta = random.random() * 2 * math.pi
+        x = node[0] + r * math.cos(theta)
+        y = node[1] + r * math.sin(theta)
+        if self._is_valid_position(x, y):
+            return (x, y)
+        return None
+
+    def _dijkstra(self, start, goal):
+        if start == goal: return 0.0
+        # 优化：如果 start 或 goal 孤立，直接返回 inf
+        if start not in self.sparse_adj or goal not in self.sparse_adj:
+            return float('inf')
+
+        pq = [(0.0, start)]
+        dists = {start: 0.0}
+        
+        while pq:
+            d, u = heapq.heappop(pq)
+            if u == goal: return d
+            
+            if d > dists.get(u, float('inf')): continue
+            
+            for v, weight in self.sparse_adj.get(u, {}).items():
+                new_dist = d + weight
+                if new_dist < dists.get(v, float('inf')):
+                    dists[v] = new_dist
+                    heapq.heappush(pq, (new_dist, v))
+        return float('inf')
+
+    def _sync_to_base(self):
+        self.nodes = self.sparse_nodes
+        self.edges = []
+        seen = set()
+        for u, neighbors in self.sparse_adj.items():
+            for v in neighbors:
+                # 保证边只添加一次
+                edge_key = tuple(sorted((u, v)))
+                if edge_key not in seen:
+                    self.edges.append((u, v))
+                    seen.add(edge_key)
 
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    
@@ -1745,7 +2108,7 @@ class PRMRenderer:
                 if event.type == pygame.QUIT:
                     running = False
             self.render(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths, env, algorithm)
-            self.clock.tick(30)
+            self.clock.tick(60)
         pygame.quit()
 
 
@@ -1796,7 +2159,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "beam" # "delta" / "star" / "beam" / "spars"
+    generator_name = "spars" # "delta" / "star" / "beam" / "spars"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
@@ -1848,7 +2211,7 @@ if __name__ == "__main__":
         medial_axis_paths) = prm_generator.generate_prm()
 
     elif generator_name == "spars":
-        generator = SPARS(grid_width, grid_height, obstacles, num_nodes=3000, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
+        generator = SPARS2(grid_width, grid_height, obstacles, num_nodes=3000, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
         (nodes, edges) = generator.generate_prm()
 
     end_time = time.time()
@@ -1862,5 +2225,5 @@ if __name__ == "__main__":
     renderer = PRMRenderer(grid_width, grid_height)
     # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
     #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
-    renderer.run(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name)
+    renderer.save_image(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name, filepath="prm_result.pdf")
 
