@@ -2226,4 +2226,5 @@ if __name__ == "__main__":
     # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
     #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
     renderer.save_image(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name, filepath="prm_result.pdf")
+    # !!! 远端服务器上不能用renderer.run()，只能保存图片后查看 !!!因为无法唤起窗口，进程会一直等待窗口唤醒导致死锁
 
