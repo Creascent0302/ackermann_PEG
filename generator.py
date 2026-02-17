@@ -17,6 +17,7 @@ try:
 except ImportError:
     HAS_CV2 = False
 import random
+import scipy.ndimage
 
 class BeamPRM(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
@@ -1974,6 +1975,312 @@ class SPARS2(BasePathPlanner):
                     self.edges.append((u, v))
                     seen.add(edge_key)
 
+from scipy.spatial import Delaunay
+from scipy.ndimage import label, center_of_mass
+from scipy.signal import convolve2d
+import matplotlib.pyplot as plt
+
+class GSRM(BasePathPlanner):
+    def __init__(self, grid_width, grid_height, obstacles, 
+                 upscale_factor=6,    # 室内环境建议放大 4 倍
+                 iterations=15000,     # 2000 次通常足够
+                 dt=1.0,
+                 # 使用更快的扩散系数，让图案更快成型
+                 Du=0.18, Dv=0.09,      
+                 # 经典的 Pearson "Spot" 参数 (F=0.035, k=0.060 ~ 0.062)
+                 # 对应论文中的 Input A (Feed) 和 B (Kill)
+                 A=0.040, 
+                 B=0.062,
+                 **kwargs):
+        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+        
+        self.grid_w = int(grid_width)
+        self.grid_h = int(grid_height)
+        self.upscale = upscale_factor
+        self.sim_w = self.grid_w * self.upscale
+        self.sim_h = self.grid_h * self.upscale
+        
+        print(f"GSRM Reset: Grid {self.grid_w}x{self.grid_h} -> Sim {self.sim_w}x{self.sim_h}")
+        print(f"Params: F(A)={A}, k(B)={B}, Du={Du}, Dv={Dv}")
+        
+        self.N = iterations
+        self.dt = dt
+        self.Du = Du
+        self.Dv = Dv
+        self.A = A
+        self.B = B
+        
+        # 拉普拉斯卷积核 (Isotropic Laplacian)
+        self.laplacian_kernel = np.array([[0.05, 0.20, 0.05],
+                                          [0.20, -1.0, 0.20],
+                                          [0.05, 0.20, 0.05]])
+        
+        self.nodes = []
+        self.edges = []
+
+    def generate_prm(self):
+        start_time = time.time()
+
+        self.obstacle_mask = self._create_upscaled_mask()
+
+        self.U = np.random.uniform(0.8, 1.0, (self.sim_h, self.sim_w))
+        self.V = np.random.uniform(0.0, 0.2, (self.sim_h, self.sim_w))        
+
+        print("执行仿真中...")
+        self._simulate()
+
+        # 5. 调试输出：保存热力图
+        self._save_debug_viz("gsrm_debug_check.png")
+
+        # 6. 提取斑点
+        self.nodes = self._extract_nodes(threshold_ratio=0.35)  # 降低阈值
+    
+        # 如果节点仍然太少，使用多阈值策略
+        if len(self.nodes) < 20:
+            print("Too few nodes, trying lower threshold...")
+            self.nodes = self._extract_nodes(threshold_ratio=0.25)
+        
+        print(f"Final nodes: {len(self.nodes)}")
+
+        # 构建几何
+        if len(self.nodes) > 1:
+            self._construct_geometry()
+
+        print(f"Time: {time.time()-start_time:.2f}s")
+        return self.nodes, self.edges
+
+    def _extract_nodes(self, threshold_ratio=0.35):  # 【改】降低阈值比例
+        """
+        Algorithm 1, Line 13-19: 节点提取
+        使用轮廓检测而非质心，避免空心斑点问题
+        """
+        max_v = np.max(self.V)
+        print(f"Max V: {max_v:.4f}")
+        
+        if max_v < 0.05:
+            print("WARNING: Pattern formation failed")
+            return []
+        
+        # 【改】使用更低的阈值
+        threshold = max_v * threshold_ratio
+        print(f"Threshold: {threshold:.4f}")
+        
+        # 二值化
+        binary_mask = (self.V > threshold).astype(np.uint8)
+        
+        # 【关键修改】使用 OpenCV 的轮廓检测（更符合论文）
+        try:
+            import cv2
+            contours, _ = cv2.findContours(binary_mask, 
+                                        cv2.RETR_EXTERNAL,  # 只检测外轮廓
+                                        cv2.CHAIN_APPROX_SIMPLE)
+            
+            nodes = []
+            for contour in contours:
+                # 过滤太小的轮廓（噪声）
+                area = cv2.contourArea(contour)
+                if area < 5:  # 至少5个像素
+                    continue
+                
+                # 计算轮廓的外接矩形中心（而非质心）
+                M = cv2.moments(contour)
+                if M['m00'] == 0:  # 避免除零
+                    continue
+                
+                # 仿真坐标系中的质心
+                sim_cx = M['m10'] / M['m00']
+                sim_cy = M['m01'] / M['m00']
+                
+                # 转换为 grid 坐标
+                grid_x = sim_cx / self.upscale
+                grid_y = sim_cy / self.upscale
+                
+                # 检查有效性
+                if self._is_valid_position(grid_x, grid_y):
+                    render_x = grid_x * ENV_CONFIG['cell_size']
+                    render_y = grid_y * ENV_CONFIG['cell_size']
+                    nodes.append((render_x, render_y))
+            
+            print(f"Extracted {len(nodes)} nodes from {len(contours)} contours")
+            return nodes
+            
+        except ImportError:
+            # 【备选方案】如果没有 OpenCV，使用改进的 scipy 方法
+            print("OpenCV not found, using scipy (less accurate)")
+            return self._extract_nodes_scipy(threshold_ratio)
+
+    def _extract_nodes_scipy(self, threshold_ratio=0.35):
+        """备选方案：使用 scipy 但改进算法"""
+        from scipy.ndimage import label, find_objects
+        
+        max_v = np.max(self.V)
+        threshold = max_v * threshold_ratio
+        
+        binary_mask = self.V > threshold
+        labeled_array, num_features = label(binary_mask)
+        
+        nodes = []
+        # 使用 find_objects 获取每个斑点的边界框
+        slices = find_objects(labeled_array)
+        
+        for i, bbox in enumerate(slices):
+            if bbox is None:
+                continue
+            
+            # 提取该斑点的子区域
+            spot_mask = labeled_array[bbox] == (i + 1)
+            spot_values = self.V[bbox] * spot_mask
+            
+            # 找到该斑点的最大值位置（而非质心）
+            local_max_idx = np.unravel_index(np.argmax(spot_values), spot_values.shape)
+            
+            # 转换为全局坐标
+            sim_cy = bbox[0].start + local_max_idx[0]
+            sim_cx = bbox[1].start + local_max_idx[1]
+            
+            # 转换为 grid 坐标
+            grid_x = sim_cx / self.upscale
+            grid_y = sim_cy / self.upscale
+            
+            if self._is_valid_position(grid_x, grid_y):
+                render_x = grid_x * ENV_CONFIG['cell_size']
+                render_y = grid_y * ENV_CONFIG['cell_size']
+                nodes.append((render_x, render_y))
+        
+        print(f"Extracted {len(nodes)} nodes from {num_features} features")
+        return nodes
+
+    def _simulate(self):
+        U = self.U
+        V = self.V
+        mask = self.obstacle_mask
+        kernel = self.laplacian_kernel
+        Du, Dv = self.Du, self.Dv
+        A, B = self.A, self.B
+        dt = self.dt
+
+        for i in range(self.N):
+            U[mask] = 0.0
+            V[mask] = 0.0
+            
+            # 2. 计算拉普拉斯算子 (Convolution)
+            # mode='same' 保证输出尺寸不变，boundary='fill' 默认边缘补0
+            Lu = convolve2d(U, kernel, mode='same', boundary='fill', fillvalue=0)
+            Lv = convolve2d(V, kernel, mode='same', boundary='fill', fillvalue=0)
+            
+            # 3. Gray-Scott 反应项
+            uvv = U * (V * V) # u*v^2
+            
+            # 4. 更新
+            # du/dt = Du*Lu - uv^2 + F*(1-u)
+            # dv/dt = Dv*Lv + uv^2 - (F+k)*v
+            
+            U += (Du * Lu - uvv + A * (1.0 - U)) * dt
+            V += (Dv * Lv + uvv - (A + B) * V) * dt
+            
+            # 5. 数值稳定性截断 (Clamping)
+            # 必须防止数值发散，否则负数会导致平方项错误
+            np.clip(U, 0.0, 1.0, out=U)
+            np.clip(V, 0.0, 1.0, out=V)
+
+    def _create_upscaled_mask(self):
+        mask = np.zeros((self.sim_h, self.sim_w), dtype=bool)
+        
+        for (ox, oy) in self.obstacles:
+            # 映射范围
+            r_start = int(oy * self.upscale)
+            r_end = int((oy + 1) * self.upscale)
+            c_start = int(ox * self.upscale)
+            c_end = int((ox + 1) * self.upscale)
+            
+            # 边界保护
+            r_start = max(0, r_start)
+            r_end = min(self.sim_h, r_end)
+            c_start = max(0, c_start)
+            c_end = min(self.sim_w, c_end)
+            
+            mask[r_start:r_end, c_start:c_end] = True
+            
+        return mask
+
+    def _construct_geometry(self):
+        # 简单的 Delaunay 连接
+        dummy_indices = np.argwhere(self.obstacle_mask)
+        # 采样虚拟点
+        if len(dummy_indices) > 0:
+            count = min(len(dummy_indices), len(self.nodes)*2)
+            choices = np.random.choice(len(dummy_indices), count, replace=False)
+            dummies = [((c/self.upscale) * ENV_CONFIG['cell_size'], (r/self.upscale) * ENV_CONFIG['cell_size']) for r, c in dummy_indices[choices]]
+        else:
+            dummies = []
+
+        all_points = np.array(self.nodes + dummies)
+        if len(all_points) < 4: return
+
+        try:
+            tri = Delaunay(all_points)
+        except:
+            return
+
+        seen = set()
+        num_real = len(self.nodes)
+        
+        for simplex in tri.simplices:
+            for i in range(3):
+                u, v = simplex[i], simplex[(i+1)%3]
+                # 仅连接真实节点
+                if u < num_real and v < num_real:
+                    if u > v: u, v = v, u
+                    if (u, v) in seen: continue
+                    seen.add((u, v))
+                    
+                    if self._check_line_collision(self.nodes[u], self.nodes[v]):
+                        self.edges.append((self.nodes[u], self.nodes[v]))
+
+    def _check_line_collision(self, start, end):
+        # 注意：输入的坐标是渲染坐标，需要转换为 grid 坐标进行碰撞检测
+        x0 = start[0] / ENV_CONFIG['cell_size']
+        y0 = start[1] / ENV_CONFIG['cell_size']
+        x1 = end[0] / ENV_CONFIG['cell_size']
+        y1 = end[1] / ENV_CONFIG['cell_size']
+        
+        # 计算距离（grid 坐标单位）
+        dist = np.hypot(x1-x0, y1-y0)
+        # 采样密度：每个 grid 单位至少2个采样点
+        steps = int(dist * 2) + 1
+        
+        for i in range(steps + 1):  # 包含端点
+            t = i / steps if steps > 0 else 0
+            x = x0 + (x1-x0)*t
+            y = y0 + (y1-y0)*t
+            # 使用 grid 坐标检查碰撞
+            if not self._is_valid_position(x, y):
+                return False
+        return True
+    
+    def _is_valid_position(self, x, y):
+        ix, iy = int(round(x)), int(round(y))
+        if (ix, iy) in self.obstacles: return False
+        if ix < 0 or ix >= self.grid_w or iy < 0 or iy >= self.grid_h: return False
+        return True
+
+    def _save_debug_viz(self, filename):
+        plt.figure(figsize=(12, 6))
+        
+        plt.subplot(1, 2, 1)
+        plt.title("Map & Obstacles (Mask)")
+        plt.imshow(self.obstacle_mask, cmap='gray')
+        
+        plt.subplot(1, 2, 2)
+        plt.title(f"Chemical V (Max={self.V.max():.2f})")
+        plt.imshow(self.V, cmap='inferno')
+        plt.colorbar()
+        
+        plt.savefig(filename)
+        plt.close()
+        print(f"Debug image saved: {filename}")
+
+
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    
     # 使用PIL将PNG转换为PDF
@@ -2159,7 +2466,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "delta" / "star" / "beam" / "spars"
+    generator_name = "gsrm" # "delta" / "star" / "beam" / "spars"/ "gsrm"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
@@ -2213,11 +2520,15 @@ if __name__ == "__main__":
     elif generator_name == "spars":
         generator = SPARS2(grid_width, grid_height, obstacles, num_nodes=3000, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
         (nodes, edges) = generator.generate_prm()
+    elif generator_name == "gsrm":
+        generator = GSRM(grid_width, grid_height, obstacles)
+        (nodes, edges) = generator.generate_prm()
 
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
     print(len(nodes), "nodes generated")
     print(len(edges), "edges generated")
+    print(nodes, edges)
     # print(len(medial_axis_nodes), "selected medial axis nodes")
     # print(len(medial_axis_all_nodes), "all medial axis nodes (including edge endpoints)")
     # print(len(medial_axis_edges), "medial axis edges")
