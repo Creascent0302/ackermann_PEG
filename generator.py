@@ -1976,21 +1976,19 @@ class SPARS2(BasePathPlanner):
                     seen.add(edge_key)
 
 from scipy.spatial import Delaunay
-from scipy.ndimage import label, center_of_mass
 from scipy.signal import convolve2d
 import matplotlib.pyplot as plt
 
 class GSRM(BasePathPlanner):
     def __init__(self, grid_width, grid_height, obstacles, 
                  upscale_factor=6,    # 室内环境建议放大 4 倍
-                 iterations=15000,     # 2000 次通常足够
-                 dt=1.0,
+                 iterations=1000,     # 2000 次通常足够
+                 dt=2.0,
                  # 使用更快的扩散系数，让图案更快成型
-                 Du=0.18, Dv=0.09,      
-                 # 经典的 Pearson "Spot" 参数 (F=0.035, k=0.060 ~ 0.062)
-                 # 对应论文中的 Input A (Feed) 和 B (Kill)
-                 A=0.040, 
-                 B=0.062,
+                 # 目前得到的还比较好的结果是 Du=0.32, Dv=0.08，A=0.035, B=0.063
+                 Du=0.32, Dv=0.08,      
+                 A=0.035, 
+                 B=0.063,
                  **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         
@@ -2163,23 +2161,19 @@ class GSRM(BasePathPlanner):
             U[mask] = 0.0
             V[mask] = 0.0
             
-            # 2. 计算拉普拉斯算子 (Convolution)
+            # 计算拉普拉斯算子 
             # mode='same' 保证输出尺寸不变，boundary='fill' 默认边缘补0
             Lu = convolve2d(U, kernel, mode='same', boundary='fill', fillvalue=0)
             Lv = convolve2d(V, kernel, mode='same', boundary='fill', fillvalue=0)
             
-            # 3. Gray-Scott 反应项
             uvv = U * (V * V) # u*v^2
             
-            # 4. 更新
             # du/dt = Du*Lu - uv^2 + F*(1-u)
             # dv/dt = Dv*Lv + uv^2 - (F+k)*v
             
             U += (Du * Lu - uvv + A * (1.0 - U)) * dt
             V += (Dv * Lv + uvv - (A + B) * V) * dt
             
-            # 5. 数值稳定性截断 (Clamping)
-            # 必须防止数值发散，否则负数会导致平方项错误
             np.clip(U, 0.0, 1.0, out=U)
             np.clip(V, 0.0, 1.0, out=V)
 
@@ -2528,7 +2522,7 @@ if __name__ == "__main__":
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
     print(len(nodes), "nodes generated")
     print(len(edges), "edges generated")
-    print(nodes, edges)
+    # print(nodes, edges)
     # print(len(medial_axis_nodes), "selected medial axis nodes")
     # print(len(medial_axis_all_nodes), "all medial axis nodes (including edge endpoints)")
     # print(len(medial_axis_edges), "medial axis edges")
