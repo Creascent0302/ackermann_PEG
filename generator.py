@@ -5,7 +5,7 @@ import sys
 sys.path.append('.')
 from config import ENV_CONFIG
 import math
-import heapq  # 新增: 最短路
+import heapq
 from map_generator import generate_indoor_obstacles, generate_maze_obstacles
 from base_generator import BasePathPlanner
 import time
@@ -17,7 +17,10 @@ try:
 except ImportError:
     HAS_CV2 = False
 import random
-import scipy.ndimage
+
+from scipy.spatial import Delaunay
+from scipy.signal import convolve2d
+import matplotlib.pyplot as plt
 
 class BeamPRM(BasePathPlanner):
     """概率路图生成器（精简：仅节点 + 边，去除守卫/连接器分类）"""
@@ -1975,10 +1978,6 @@ class SPARS2(BasePathPlanner):
                     self.edges.append((u, v))
                     seen.add(edge_key)
 
-from scipy.spatial import Delaunay
-from scipy.signal import convolve2d
-import matplotlib.pyplot as plt
-
 class GSRM(BasePathPlanner):
     def __init__(self, grid_width, grid_height, obstacles, 
                  upscale_factor=6,    # 室内环境建议放大 4 倍
@@ -1989,6 +1988,8 @@ class GSRM(BasePathPlanner):
                  Du=0.32, Dv=0.08,      
                  A=0.035, 
                  B=0.063,
+                 min_node_dist=0.5,
+                 peak_min_distance=8,
                  **kwargs):
         super().__init__(grid_width, grid_height, obstacles, **kwargs)
         
@@ -2007,7 +2008,8 @@ class GSRM(BasePathPlanner):
         self.Dv = Dv
         self.A = A
         self.B = B
-        
+        self.min_node_dist = min_node_dist
+        self.peak_min_distance = peak_min_distance
         # 拉普拉斯卷积核 (Isotropic Laplacian)
         self.laplacian_kernel = np.array([[0.05, 0.20, 0.05],
                                           [0.20, -1.0, 0.20],
@@ -2047,106 +2049,46 @@ class GSRM(BasePathPlanner):
         print(f"Time: {time.time()-start_time:.2f}s")
         return self.nodes, self.edges
 
-    def _extract_nodes(self, threshold_ratio=0.35):  # 【改】降低阈值比例
-        """
-        Algorithm 1, Line 13-19: 节点提取
-        使用轮廓检测而非质心，避免空心斑点问题
-        """
-        max_v = np.max(self.V)
-        print(f"Max V: {max_v:.4f}")
+    def _extract_nodes(self, threshold_ratio=0.4):
+        from scipy.ndimage import maximum_filter
         
+        max_v = np.max(self.V)
         if max_v < 0.05:
-            print("WARNING: Pattern formation failed")
             return []
         
-        # 【改】使用更低的阈值
         threshold = max_v * threshold_ratio
-        print(f"Threshold: {threshold:.4f}")
+        neighborhood_size = self.peak_min_distance
         
-        # 二值化
-        binary_mask = (self.V > threshold).astype(np.uint8)
+        # 局部极大值检测（替代轮廓检测）
+        local_max = maximum_filter(self.V, size=neighborhood_size, mode='constant', cval=0.0)
+        is_peak = (self.V == local_max) & (self.V > threshold) & (~self.obstacle_mask)
+        peak_coords = np.argwhere(is_peak)
         
-        # 【关键修改】使用 OpenCV 的轮廓检测（更符合论文）
-        try:
-            import cv2
-            contours, _ = cv2.findContours(binary_mask, 
-                                        cv2.RETR_EXTERNAL,  # 只检测外轮廓
-                                        cv2.CHAIN_APPROX_SIMPLE)
-            
-            nodes = []
-            for contour in contours:
-                # 过滤太小的轮廓（噪声）
-                area = cv2.contourArea(contour)
-                if area < 5:  # 至少5个像素
-                    continue
-                
-                # 计算轮廓的外接矩形中心（而非质心）
-                M = cv2.moments(contour)
-                if M['m00'] == 0:  # 避免除零
-                    continue
-                
-                # 仿真坐标系中的质心
-                sim_cx = M['m10'] / M['m00']
-                sim_cy = M['m01'] / M['m00']
-                
-                # 转换为 grid 坐标
-                grid_x = sim_cx / self.upscale
-                grid_y = sim_cy / self.upscale
-                
-                # 检查有效性
-                if self._is_valid_position(grid_x, grid_y):
-                    render_x = grid_x * ENV_CONFIG['cell_size']
-                    render_y = grid_y * ENV_CONFIG['cell_size']
-                    nodes.append((render_x, render_y))
-            
-            print(f"Extracted {len(nodes)} nodes from {len(contours)} contours")
-            return nodes
-            
-        except ImportError:
-            # 【备选方案】如果没有 OpenCV，使用改进的 scipy 方法
-            print("OpenCV not found, using scipy (less accurate)")
-            return self._extract_nodes_scipy(threshold_ratio)
-
-    def _extract_nodes_scipy(self, threshold_ratio=0.35):
-        """备选方案：使用 scipy 但改进算法"""
-        from scipy.ndimage import label, find_objects
+        if len(peak_coords) == 0:
+            return []
         
-        max_v = np.max(self.V)
-        threshold = max_v * threshold_ratio
+        # 按亮度排序
+        peak_values = self.V[is_peak]
+        peak_coords = peak_coords[np.argsort(-peak_values)]
         
-        binary_mask = self.V > threshold
-        labeled_array, num_features = label(binary_mask)
-        
+        # 转换坐标
         nodes = []
-        # 使用 find_objects 获取每个斑点的边界框
-        slices = find_objects(labeled_array)
-        
-        for i, bbox in enumerate(slices):
-            if bbox is None:
-                continue
-            
-            # 提取该斑点的子区域
-            spot_mask = labeled_array[bbox] == (i + 1)
-            spot_values = self.V[bbox] * spot_mask
-            
-            # 找到该斑点的最大值位置（而非质心）
-            local_max_idx = np.unravel_index(np.argmax(spot_values), spot_values.shape)
-            
-            # 转换为全局坐标
-            sim_cy = bbox[0].start + local_max_idx[0]
-            sim_cx = bbox[1].start + local_max_idx[1]
-            
-            # 转换为 grid 坐标
+        for sim_cy, sim_cx in peak_coords:
             grid_x = sim_cx / self.upscale
             grid_y = sim_cy / self.upscale
-            
             if self._is_valid_position(grid_x, grid_y):
-                render_x = grid_x * ENV_CONFIG['cell_size']
-                render_y = grid_y * ENV_CONFIG['cell_size']
-                nodes.append((render_x, render_y))
+                nodes.append((grid_x * ENV_CONFIG['cell_size'],
+                            grid_y * ENV_CONFIG['cell_size']))
         
-        print(f"Extracted {len(nodes)} nodes from {num_features} features")
-        return nodes
+        # NMS去重（距离过近只保留亮度高的）
+        min_dist = self.min_node_dist * ENV_CONFIG['cell_size']
+        kept = []
+        for node in nodes:
+            if all(np.hypot(node[0]-k[0], node[1]-k[1]) >= min_dist for k in kept):
+                kept.append(node)
+        
+        print(f"Extracted {len(kept)} nodes")
+        return kept
 
     def _simulate(self):
         U = self.U
@@ -2273,6 +2215,724 @@ class GSRM(BasePathPlanner):
         plt.savefig(filename)
         plt.close()
         print(f"Debug image saved: {filename}")
+
+class ODRM(BasePathPlanner):
+    """
+    ODRM: Optimized Directed Roadmap Graph
+    
+    严格按照论文实现:
+      Henkel & Toussaint, "Optimized Directed Roadmap Graph for Multi-Agent
+      Path Finding Using Stochastic Gradient Descent", SAC 2020.
+
+    算法流程:
+      1. 在 C_free 中随机采样 N 个顶点
+      2. Delaunay 三角剖分建边，过滤碰撞边
+      3. 为每条边关联方向标量 d_e=0（松弛DRM）
+      4. SGD(ADAM) 优化：批次采样路径，计算梯度，更新 V 和 d
+      5. 硬化方向：d>0 → 固定方向，输出最终路线图
+
+    代价函数 (论文 Eq.1):
+      C_relax(p) = T(|xs-p1|) + T(|pK-xg|) + Σ L(|pi-1 - pi|) * D(d_(pi-1,pi))
+      
+      T(r) = αT * (r² + r)       尾部代价（二次惩罚促使顶点均匀分布）
+      L(r) = r                    路段长度
+      D(d) = αD / (1 + exp(d))   方向惩罚（Sigmoid，惩罚逆向行走）
+
+    论文参数:
+      αT=3, αD=2, αB=256, αADAM=0.01, β1=0.9, β2=0.999, ε=1e-8
+    """
+
+    def __init__(self,
+                 grid_width, grid_height, obstacles,
+                 num_nodes=200,
+                 num_iterations=2000,
+                 alpha_T=3.0,
+                 alpha_D=2.0,
+                 alpha_B=128,
+                 alpha_adam=0.01,
+                 beta1=0.9,
+                 beta2=0.999,
+                 epsilon=1e-8,
+                 k_neighbors=3,
+                 use_hard_drm=True,
+                 edge_check_resolution=15,
+                 verbose=True,
+                 **kwargs):
+        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+
+        # 基本参数
+        self.num_nodes = num_nodes
+        self.num_iterations = num_iterations
+
+        # 论文超参数
+        self.alpha_T = alpha_T
+        self.alpha_D = alpha_D
+        self.alpha_B = alpha_B
+        self.lr = alpha_adam
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.k_neighbors = k_neighbors
+
+        # 模式
+        self.use_hard_drm = use_hard_drm
+        self.edge_check_resolution = edge_check_resolution
+        self.verbose = verbose
+
+        # 运行时状态（内部使用浮点坐标，与地图坐标相同）
+        self._V = None              # np.array (N,2) 顶点坐标
+        self._d = None              # np.array (E,)  边方向标量
+        self._edge_list = []        # list of (i,j)  边的顶点索引对 (i<j)
+        self._adj = defaultdict(list)  # 邻接表 {node_idx: [(neighbor_idx, edge_pos, is_ij_order), ...]}
+
+        # 外部接口（BasePathPlanner 兼容）
+        self.nodes = []
+        self.edges = []
+        self.node_kdtree = None
+
+    # =====================================================================
+    #  工具函数
+    # =====================================================================
+
+    def _sample_free_point(self):
+        """在自由空间中随机采样一个浮点坐标点"""
+        for _ in range(2000):
+            x = random.uniform(0.5, self.grid_width - 0.5)
+            y = random.uniform(0.5, self.grid_height - 0.5)
+            if self._point_is_free(x, y):
+                return np.array([x, y])
+        return None
+
+    def _point_is_free(self, x, y):
+        """检查浮点坐标是否在自由空间"""
+        ix, iy = int(round(x)), int(round(y))
+        if ix < 0 or ix >= self.grid_width or iy < 0 or iy >= self.grid_height:
+            return False
+        return (ix, iy) not in self.obstacles
+
+    def _edge_is_free(self, p1, p2):
+        """
+        检查两个浮点坐标之间的线段是否与障碍物碰撞。
+        沿线段均匀采样 edge_check_resolution 个点检测。
+        """
+        n = self.edge_check_resolution
+        for k in range(n + 1):
+            t = k / n
+            px = p1[0] * (1 - t) + p2[0] * t
+            py = p1[1] * (1 - t) + p2[1] * t
+            if not self._point_is_free(px, py):
+                return False
+        return True
+
+    # =====================================================================
+    #  Delaunay 三角剖分建边
+    # =====================================================================
+
+    def _build_delaunay_edges(self, V):
+        """
+        论文 Section 3: "Edges are then constructed using Delaunay Triangulation.
+        If an edge is collision-free, it is added to the graph."
+        
+        论文 Section 3.2: "the edge set is uniquely given by its Delaunay 
+        triangulation and removing colliding edges. Note that this triangulation
+        maximizes the minimal angle of the triangles, thereby leading to more 
+        space between edges."
+        
+        参数: V - (N,2) numpy array
+        返回: edge_list - [(i,j), ...] 其中 i < j
+        """
+        N = len(V)
+        if N < 3:
+            return []
+
+        try:
+            tri = Delaunay(V)
+        except Exception:
+            return []
+
+        edge_set = set()
+        for simplex in tri.simplices:
+            for k in range(3):
+                i = int(simplex[k])
+                j = int(simplex[(k + 1) % 3])
+                if i > j:
+                    i, j = j, i
+                edge_set.add((i, j))
+
+        # 碰撞过滤
+        valid_edges = []
+        for (i, j) in edge_set:
+            if self._edge_is_free(V[i], V[j]):
+                valid_edges.append((i, j))
+
+        return valid_edges
+
+    def _build_adjacency(self, edge_list, E):
+        """根据边列表构建邻接表，供 A* 使用"""
+        adj = defaultdict(list)
+        for pos, (i, j) in enumerate(edge_list):
+            # (邻居索引, 在edge_list/d_array中的位置, 是否是i→j方向)
+            adj[i].append((j, pos, True))    # i→j 是顺向 (d>0 低代价)
+            adj[j].append((i, pos, False))   # j→i 是逆向 (d<0 低代价)
+        return adj
+
+    # =====================================================================
+    #  代价函数 (论文 Eq.1, Eq.2)
+    # =====================================================================
+
+    def _T(self, r):
+        """尾部代价: T(r) = αT * (r² + r)  [论文 Eq.1]"""
+        return self.alpha_T * (r * r + r)
+
+    def _dT_dr(self, r):
+        """∂T/∂r = αT * (2r + 1)"""
+        return self.alpha_T * (2.0 * r + 1.0)
+
+    def _D(self, d_val):
+        """
+        方向惩罚: D(d) = αD / (1 + exp(d))  [论文 Eq.2]
+        d > 0 → D ≈ 0  (顺向，无惩罚)
+        d < 0 → D ≈ αD  (逆向，最大惩罚)
+        d = 0 → D = αD/2 (未定方向)
+        """
+        d_c = max(min(d_val, 500.0), -500.0)
+        return self.alpha_D / (1.0 + math.exp(d_c))
+
+    def _dD_dd(self, d_val):
+        """∂D/∂d = -αD * exp(d) / (1 + exp(d))²"""
+        d_c = max(min(d_val, 500.0), -500.0)
+        e = math.exp(d_c)
+        denom = (1.0 + e)
+        return -self.alpha_D * e / (denom * denom)
+
+    # =====================================================================
+    #  A* 搜索 (松弛 DRM)
+    # =====================================================================
+
+    def _astar_relax(self, xs, xg, V, d_array, edge_list, adj, kdtree):
+        """
+        论文 Section 3.1:
+        "we first compute a fixed set of the 3 nearest vertices for xs and xg,
+        collision-check the corresponding segments, and assume them as part of
+        the graph during A*."
+        
+        "In the relaxed case, all edges are potential decisions. The additive
+        decomposable costs provide the cost-so-far. We use the euclidean
+        heuristic to guide search."
+
+        返回:
+          path_indices: [-1, i1, i2, ..., iK, -2]
+                        -1 = xs, -2 = xg, 其他是图顶点索引
+          path_cost: 总代价
+          None, None 如果找不到路径
+        """
+        N = len(V)
+        k = min(self.k_neighbors, N)
+
+        # 找 xs 和 xg 的 k 个最近顶点
+        dists_s, idxs_s = kdtree.query(xs, k=k)
+        dists_g, idxs_g = kdtree.query(xg, k=k)
+
+        # 确保返回数组形式
+        if k == 1:
+            idxs_s = [idxs_s]
+            idxs_g = [idxs_g]
+
+        # 碰撞检测 xs→顶点 和 顶点→xg 的连接
+        start_connections = []  # (vertex_idx, tail_cost)
+        for vi in idxs_s:
+            vi = int(vi)
+            if self._edge_is_free(xs, V[vi]):
+                r = np.linalg.norm(xs - V[vi])
+                start_connections.append((vi, self._T(r)))
+
+        goal_connections = set()  # vertex_idx 的集合
+        goal_costs = {}           # vertex_idx → tail_cost
+        for vi in idxs_g:
+            vi = int(vi)
+            if self._edge_is_free(V[vi], xg):
+                r = np.linalg.norm(V[vi] - xg)
+                goal_connections.add(vi)
+                goal_costs[vi] = self._T(r)
+
+        if not start_connections or not goal_connections:
+            return None, None
+
+        # A* 搜索
+        # 状态空间: 图顶点索引 (0..N-1)，加上虚拟起点 -1 和虚拟终点 -2
+        INF = float('inf')
+        g = {}
+        g[-1] = 0.0
+        came_from = {-1: None}
+        open_heap = []
+
+        xg_arr = xg  # 用于启发式
+
+        def heuristic(node_idx):
+            if node_idx == -2:
+                return 0.0
+            if node_idx == -1:
+                return np.linalg.norm(xs - xg_arr)
+            return np.linalg.norm(V[node_idx] - xg_arr)
+
+        heapq.heappush(open_heap, (heuristic(-1), -1))
+        closed = set()
+
+        while open_heap:
+            f_cur, cur = heapq.heappop(open_heap)
+            if cur in closed:
+                continue
+            closed.add(cur)
+
+            if cur == -2:
+                break
+
+            neighbors = []  # (next_idx, step_cost)
+
+            if cur == -1:
+                # 从虚拟起点展开到图顶点（尾部连接）
+                for (vi, tc) in start_connections:
+                    neighbors.append((vi, tc))
+            else:
+                # 从图顶点展开到邻居（松弛DRM：双向可走，带方向惩罚）
+                for (nxt, edge_pos, is_forward) in adj[cur]:
+                    r = np.linalg.norm(V[cur] - V[nxt])
+                    d_val = d_array[edge_pos]
+                    # 论文 Eq.1: L(|pi-1 - pi|) * D(d_(pi-1,pi))
+                    # 顺向(i→j): d_(pi-1,pi) = +d_val → D(+d) ≈ 0
+                    # 逆向(j→i): d_(pi-1,pi) = -d_val → D(-d) ≈ αD
+                    d_effective = d_val if is_forward else -d_val
+                    step_cost = r * self._D(d_effective)
+                    neighbors.append((nxt, step_cost))
+
+                # 如果当前顶点可以连接到 xg（尾部）
+                if cur in goal_connections:
+                    neighbors.append((-2, goal_costs[cur]))
+
+            for (nxt, sc) in neighbors:
+                new_g = g[cur] + sc
+                if new_g < g.get(nxt, INF):
+                    g[nxt] = new_g
+                    came_from[nxt] = cur
+                    heapq.heappush(open_heap, (new_g + heuristic(nxt), nxt))
+
+        if -2 not in g:
+            return None, None
+
+        # 回溯路径
+        path = []
+        cur = -2
+        while cur is not None:
+            path.append(cur)
+            cur = came_from.get(cur)
+        path.reverse()
+
+        return path, g[-2]
+
+    # =====================================================================
+    #  梯度计算
+    # =====================================================================
+
+    def _compute_gradients_for_path(self, path_indices, xs, xg, V, d_array, edge_list, adj):
+        """
+        论文 Section 4:
+        "For each path query (xs,xg) we construct the optimal path π_relax(xs,xg)
+        and compute the gradient of its cost."
+        
+        对单条路径计算 ∂C_relax/∂V 和 ∂C_relax/∂d 的解析梯度。
+        
+        返回: (grad_V, grad_d)
+        """
+        N = len(V)
+        E = len(d_array)
+        grad_V = np.zeros((N, 2))
+        grad_d = np.zeros(E)
+
+        n_path = len(path_indices)
+        if n_path < 2:
+            return grad_V, grad_d
+
+        # 构建路径中每个节点的坐标
+        def get_coord(idx):
+            if idx == -1:
+                return xs
+            elif idx == -2:
+                return xg
+            else:
+                return V[idx]
+
+        # 遍历路径每一段
+        for seg in range(n_path - 1):
+            a_idx = path_indices[seg]
+            b_idx = path_indices[seg + 1]
+
+            a_coord = get_coord(a_idx)
+            b_coord = get_coord(b_idx)
+
+            diff = b_coord - a_coord
+            r = np.linalg.norm(diff)
+            if r < 1e-12:
+                continue
+
+            # 方向单位向量
+            unit = diff / r       # a → b 方向
+            dr_da = -unit         # ∂r/∂a
+            dr_db = unit          # ∂r/∂b
+
+            is_tail = (a_idx == -1 or b_idx == -2)
+
+            if is_tail:
+                # ────── 尾部代价 T(r) = αT*(r²+r) ──────
+                # ∂T/∂V_i = ∂T/∂r * ∂r/∂V_i
+                dT = self._dT_dr(r)
+
+                if a_idx == -1 and b_idx >= 0:
+                    # xs→p1: xs固定，对p1求导
+                    grad_V[b_idx] += dT * dr_db
+                elif a_idx >= 0 and b_idx == -2:
+                    # pK→xg: xg固定，对pK求导
+                    grad_V[a_idx] += dT * dr_da
+                # 如果路径只有 xs→xg（无中间顶点），跳过
+            else:
+                # ────── 中间路段代价 L(r)*D(d) ──────
+                # 找到对应的边和方向标量
+                ai, bi = a_idx, b_idx
+                if ai > bi:
+                    ai, bi = bi, ai
+                # 在 edge_list 中查找
+                edge_key = (ai, bi)
+
+                # 用邻接表快速定位 edge_pos
+                edge_pos = None
+                is_forward = None
+                for (nxt, epos, fwd) in adj[a_idx]:
+                    if nxt == b_idx:
+                        edge_pos = epos
+                        is_forward = fwd
+                        break
+
+                if edge_pos is None:
+                    continue
+
+                d_val = d_array[edge_pos]
+                d_eff = d_val if is_forward else -d_val
+
+                D_val = self._D(d_eff)
+                dD = self._dD_dd(d_eff)
+
+                # C_seg = r * D(d_eff)
+                # ∂C_seg/∂r = D(d_eff)
+                # ∂C_seg/∂d_val = r * ∂D/∂d_eff * ∂d_eff/∂d_val
+                #   顺向: ∂d_eff/∂d_val = +1
+                #   逆向: ∂d_eff/∂d_val = -1
+
+                # 对顶点的梯度
+                if a_idx >= 0:
+                    grad_V[a_idx] += D_val * dr_da
+                if b_idx >= 0:
+                    grad_V[b_idx] += D_val * dr_db
+
+                # 对方向标量的梯度
+                sign = 1.0 if is_forward else -1.0
+                grad_d[edge_pos] += r * dD * sign
+
+        return grad_V, grad_d
+
+    # =====================================================================
+    #  ADAM 优化器
+    # =====================================================================
+
+    def _adam_step(self, param, grad, m, v, t):
+        """
+        论文 Section 4:
+        "For stochastic gradient descent we employ ADAM.
+        αADAM=0.01, β1=0.9, β2=0.999, ε=1e-8"
+        
+        单步 ADAM 更新。
+        返回: (new_param, new_m, new_v)
+        """
+        m_new = self.beta1 * m + (1 - self.beta1) * grad
+        v_new = self.beta2 * v + (1 - self.beta2) * (grad ** 2)
+        m_hat = m_new / (1 - self.beta1 ** t)
+        v_hat = v_new / (1 - self.beta2 ** t)
+        param_new = param - self.lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
+        return param_new, m_new, v_new
+
+    # =====================================================================
+    #  核心: generate_prm（完整ODRM构建流程）
+    # =====================================================================
+
+    def generate_prm(self):
+        """
+        生成 ODRM 路线图。完全按照论文 Section 3-4 的算法：
+        
+        Step 1: 随机采样 N 个顶点 (论文: "randomly sampling N vertices from C_free")
+        Step 2: Delaunay 三角剖分建边 (论文: "Edges are then constructed using 
+                 Delaunay Triangulation. If an edge is collision-free, it is added")
+        Step 3: 初始化方向标量 d_e=0 (论文: 松弛DRM的初始状态)
+        Step 4: SGD(ADAM) 优化 (论文 Section 4: 批次采样、A*求路径、计算梯度、
+                 ADAM更新V和d、重建Delaunay)
+        Step 5: 硬化 + 输出 (论文: "Chard...consider a path infeasible when an 
+                 edge is traversed against its direction")
+        """
+        if self.verbose:
+            print("=" * 60)
+            print("ODRM: Optimized Directed Roadmap Graph")
+            print(f"  num_nodes={self.num_nodes}, iterations={self.num_iterations}")
+            print(f"  αT={self.alpha_T}, αD={self.alpha_D}, "
+                  f"αB={self.alpha_B}, lr={self.lr}")
+            print("=" * 60)
+
+        t_start = time.time()
+
+        # ── Step 1: 随机采样顶点 ──
+        if self.verbose:
+            print("[Step 1] 随机采样顶点...")
+
+        V_list = []
+        for _ in range(self.num_nodes * 200):
+            pt = self._sample_free_point()
+            if pt is not None:
+                V_list.append(pt)
+            if len(V_list) >= self.num_nodes:
+                break
+        V = np.array(V_list, dtype=np.float64)
+        N = len(V)
+        if self.verbose:
+            print(f"  采样完成: {N} 个顶点")
+
+        if N < 3:
+            print("  错误: 顶点不足，无法构建 ODRM")
+            self.nodes, self.edges = [], []
+            return self.nodes, self.edges
+
+        # ── Step 2: Delaunay 三角剖分建边 ──
+        if self.verbose:
+            print("[Step 2] Delaunay 三角剖分建边...")
+        edge_list = self._build_delaunay_edges(V)
+        E = len(edge_list)
+        if self.verbose:
+            print(f"  有效边数: {E}")
+
+        if E == 0:
+            print("  错误: 无有效边")
+            self.nodes, self.edges = [], []
+            return self.nodes, self.edges
+
+        # ── Step 3: 初始化方向标量 d=0 ──
+        d_array = np.zeros(E, dtype=np.float64)
+
+        # ── Step 4: SGD (ADAM) 优化 ──
+        if self.verbose:
+            print(f"[Step 4] SGD (ADAM) 优化，{self.num_iterations} 次迭代...")
+
+        # ADAM 状态
+        m_V = np.zeros_like(V)
+        v_V = np.zeros_like(V)
+        m_d = np.zeros_like(d_array)
+        v_d = np.zeros_like(d_array)
+
+        log_interval = max(1, self.num_iterations // 10)
+
+        for iteration in range(1, self.num_iterations + 1):
+
+            # 构建邻接表和KD树
+            adj = self._build_adjacency(edge_list, E)
+            kdtree = KDTree(V)
+
+            # 批次采样，计算梯度
+            batch_grad_V = np.zeros_like(V)
+            batch_grad_d = np.zeros(len(d_array))
+            valid_count = 0
+
+            for _ in range(self.alpha_B):
+                xs = self._sample_free_point()
+                xg = self._sample_free_point()
+                if xs is None or xg is None:
+                    continue
+                if np.linalg.norm(xs - xg) < 1e-3:
+                    continue
+
+                path_idx, cost = self._astar_relax(
+                    xs, xg, V, d_array, edge_list, adj, kdtree
+                )
+                if path_idx is None:
+                    continue
+
+                gV, gd = self._compute_gradients_for_path(
+                    path_idx, xs, xg, V, d_array, edge_list, adj
+                )
+                batch_grad_V += gV
+                batch_grad_d += gd
+                valid_count += 1
+
+            if valid_count == 0:
+                if self.verbose and iteration % log_interval == 0:
+                    print(f"  迭代 {iteration}: 无有效路径，跳过")
+                continue
+
+            # 平均梯度（随机梯度估计）
+            batch_grad_V /= valid_count
+            batch_grad_d /= valid_count
+
+            # ADAM 更新
+            t_adam = iteration
+            V, m_V, v_V = self._adam_step(V, batch_grad_V, m_V, v_V, t_adam)
+            d_array, m_d, v_d = self._adam_step(d_array, batch_grad_d, m_d, v_d, t_adam)
+
+            # 将顶点裁剪到合法区域，并修正落入障碍物的顶点
+            V[:, 0] = np.clip(V[:, 0], 0.5, self.grid_width - 0.5)
+            V[:, 1] = np.clip(V[:, 1], 0.5, self.grid_height - 0.5)
+            for i in range(N):
+                if not self._point_is_free(V[i, 0], V[i, 1]):
+                    # 恢复到上一次位置（用梯度反推）或重新采样
+                    V[i] += self.lr * batch_grad_V[i]  # 简单恢复
+                    if not self._point_is_free(V[i, 0], V[i, 1]):
+                        pt = self._sample_free_point()
+                        if pt is not None:
+                            V[i] = pt
+
+            # 重建 Delaunay 三角剖分（论文: 顶点位置变化后需重建边）
+            new_edge_list = self._build_delaunay_edges(V)
+            if len(new_edge_list) > 0:
+                # 保留已有边的方向标量，新边初始化为 0
+                old_d = {}
+                for pos, (i, j) in enumerate(edge_list):
+                    old_d[(i, j)] = d_array[pos]
+
+                edge_list = new_edge_list
+                E_new = len(edge_list)
+                new_d = np.zeros(E_new, dtype=np.float64)
+                new_m_d = np.zeros(E_new, dtype=np.float64)
+                new_v_d = np.zeros(E_new, dtype=np.float64)
+                for pos, (i, j) in enumerate(edge_list):
+                    if (i, j) in old_d:
+                        new_d[pos] = old_d[(i, j)]
+                        # 保留 ADAM 动量（如果边仍然存在）
+                        # 简化处理：新边的动量初始化为 0
+
+                d_array = new_d
+                m_d = new_m_d
+                v_d = new_v_d
+                E = E_new
+
+            # 日志
+            if self.verbose and (iteration % log_interval == 0 or iteration == 1):
+                mean_abs_d = np.mean(np.abs(d_array)) if len(d_array) > 0 else 0
+                decided = np.sum(np.abs(d_array) > 0.5) if len(d_array) > 0 else 0
+                elapsed = time.time() - t_start
+                print(f"  迭代 {iteration:5d}/{self.num_iterations} | "
+                      f"有效路径 {valid_count}/{self.alpha_B} | "
+                      f"mean|d|={mean_abs_d:.3f} | "
+                      f"方向确定边 {decided}/{E} | "
+                      f"耗时 {elapsed:.1f}s")
+
+        # 最终重建邻接表
+        adj = self._build_adjacency(edge_list, E)
+
+        # ── Step 5: 硬化方向 + 输出 ──
+        if self.verbose:
+            print("[Step 5] 硬化方向，构建最终路线图...")
+
+        # 保存内部状态
+        self._V = V.copy()
+        self._d = d_array.copy()
+        self._edge_list = list(edge_list)
+        self._adj = adj
+
+        # 转换为外部接口格式: self.nodes = [(x,y), ...], self.edges = [((x1,y1),(x2,y2)), ...]
+        self.nodes = [tuple(V[i]) for i in range(N)]
+
+        self.edges = []
+        for pos, (i, j) in enumerate(edge_list):
+            ni = self.nodes[i]
+            nj = self.nodes[j]
+            d_val = d_array[pos]
+
+            if self.use_hard_drm:
+                # 论文: "consider a path infeasible when an edge is traversed 
+                # against its direction"
+                # d > 0: 方向 i→j
+                # d < 0: 方向 j→i
+                # d ≈ 0: 方向未定，保留双向
+                if d_val > 0.1:
+                    self.edges.append((ni, nj))        # i→j
+                elif d_val < -0.1:
+                    self.edges.append((nj, ni))        # j→i
+                else:
+                    self.edges.append((ni, nj))        # 未定→双向
+                    self.edges.append((nj, ni))
+            else:
+                # 松弛 DRM: 无向
+                self.edges.append((ni, nj))
+                self.edges.append((nj, ni))
+
+        # 构建 KD 树
+        if len(self.nodes) > 0:
+            self.node_kdtree = KDTree(np.array(self.nodes))
+
+        # 保留最大连通分量（继承自 BasePathPlanner）
+        self._keep_largest_component()
+
+        # 更新 KD 树（节点可能被 _keep_largest_component 删除）
+        if len(self.nodes) > 0:
+            self.node_kdtree = KDTree(np.array(self.nodes))
+
+        elapsed_total = time.time() - t_start
+        if self.verbose:
+            decided = np.sum(np.abs(d_array) > 0.5) if len(d_array) > 0 else 0
+            print("=" * 60)
+            print(f"ODRM 构建完成!")
+            print(f"  最终顶点数: {len(self.nodes)}")
+            print(f"  最终边数:   {len(self.edges)}")
+            print(f"  方向确定边: {decided}/{E}")
+            print(f"  总耗时:     {elapsed_total:.2f} 秒")
+            print("=" * 60)
+
+        return self.nodes, self.edges
+
+    # =====================================================================
+    #  _keep_largest_component（与 DeltaPRM 完全一致）
+    # =====================================================================
+
+    def _keep_largest_component(self):
+        """保留最大连通分量，删除孤立点"""
+        if not self.nodes:
+            return
+
+        # 构建邻接表
+        adj = defaultdict(list)
+        for a, b in self.edges:
+            adj[a].append(b)
+            adj[b].append(a)
+
+        # BFS 找所有连通分量
+        visited = set()
+        components = []
+
+        for node in self.nodes:
+            if node in visited:
+                continue
+            component = []
+            queue = [node]
+            visited.add(node)
+            while queue:
+                current = queue.pop(0)
+                component.append(current)
+                for neighbor in adj[current]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+            components.append(component)
+
+        if not components:
+            return
+
+        largest = max(components, key=len)
+        largest_set = set(largest)
+        self.nodes = [n for n in self.nodes if n in largest_set]
+        self.edges = [(a, b) for a, b in self.edges
+                      if a in largest_set and b in largest_set]
 
 
 def save_pdf_image(screen, filepath):
@@ -2460,7 +3120,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "gsrm" # "delta" / "star" / "beam" / "spars"/ "gsrm"
+    generator_name = "gsrm" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
@@ -2517,7 +3177,15 @@ if __name__ == "__main__":
     elif generator_name == "gsrm":
         generator = GSRM(grid_width, grid_height, obstacles)
         (nodes, edges) = generator.generate_prm()
-
+    elif generator_name == "odrm":
+        generator = ODRM(
+    grid_width, grid_height, obstacles,
+    num_nodes=200,         # 论文默认200
+    num_iterations=2000,   # 论文4000，可先用2000测试
+    alpha_B=128,           # 论文256，可适当减小加速
+    verbose=True
+)
+        (nodes, edges) = generator.generate_prm()
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
     print(len(nodes), "nodes generated")
@@ -2530,6 +3198,6 @@ if __name__ == "__main__":
     renderer = PRMRenderer(grid_width, grid_height)
     # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
     #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
-    renderer.save_image(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name, filepath="prm_result.pdf")
+    renderer.save_image(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name, filepath=f"prm_result_{generator_name}.pdf")
     # !!! 远端服务器上不能用renderer.run()，只能保存图片后查看 !!!因为无法唤起窗口，进程会一直等待窗口唤醒导致死锁
 
