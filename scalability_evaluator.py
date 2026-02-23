@@ -158,7 +158,7 @@ def _create_generator(algorithm_name, environment_type,
             "indoor": dict(max_failures=200, delta=0.2,
                            visibility_radius=1.4, connection_radius=1.0),
         }
-        return SPARS(grid_width, grid_height, obstacles,
+        return SPARS2(grid_width, grid_height, obstacles,
                      num_nodes=num_samples, **params[environment_type])
 
     elif algorithm_name == "gsrm":
@@ -166,15 +166,7 @@ def _create_generator(algorithm_name, environment_type,
         # num_samples 作为目标节点数提示传入，由算法通过调整模拟分辨率来逼近
         # 若你的实现接口不同，请根据实际 GSRM 类的参数签名调整
         return GSRM(grid_width, grid_height, obstacles,
-                    num_nodes=num_samples)
-
-    elif algorithm_name == "odrm":
-        # ODRM：随机初始化 + Delaunay 建初始图 + SGD 优化节点位置/边方向
-        # num_samples 对应初始随机撒点数
-        # 若你的实现接口不同，请根据实际 ODRM 类的参数签名调整
-        return ODRM(grid_width, grid_height, obstacles,
-                    num_nodes=num_samples)
-
+                    iterations=num_samples)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm_name}")
 
