@@ -209,7 +209,7 @@ def run_algorithm_test(algorithm_name, environment_type, seed, save_images=True)
 
 def run_full_evaluation():
     """运行完整的评测流程"""
-    algorithms = ['delta', 'beam', 'spars']
+    algorithms = ['delta', 'beam', 'spars', 'gsrm', 'odrm']
     seeds = [43, 114, 520]  # 三个固定的随机种子
     # 定义测试配置: (环境, 是否使用随机种子)
     test_configs = [

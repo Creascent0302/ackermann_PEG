@@ -1639,9 +1639,6 @@ class SPARS2(BasePathPlanner):
         self.components = UnionFind()
         self.interface_data = defaultdict(dict)
 
-    # ----------------------------------------------------------------
-    # 核心工具：寻找可见哨兵 (保持你的优化)
-    # ----------------------------------------------------------------
     def _find_visible_guards(self, node, radius):
         guards = []
         r_sq = radius ** 2
@@ -1653,9 +1650,6 @@ class SPARS2(BasePathPlanner):
                     guards.append(g)
         return guards
 
-    # ----------------------------------------------------------------
-    # 主流程
-    # ----------------------------------------------------------------
     def generate_prm(self):
         print(f"开始生成 SPARS2 (Delta={self.Delta}, t={self.t_value}, M={self.M})")
         start_time = time.time()
@@ -1673,14 +1667,12 @@ class SPARS2(BasePathPlanner):
             if total_attempts % 100 == 0:
                 print(f"采样: {total_attempts}/{self.max_samples}, 节点: {len(self.sparse_nodes)}")
 
-            # 1. 采样
             rho = self._random_sample()
             if rho is None: continue
 
-            # 2. 寻找可见哨兵
             visible_guards = self._find_visible_guards(rho, self.Delta)
 
-            # 3. 覆盖准则 (Coverage)
+            # 覆盖准则
             if not visible_guards:
                 self._add_node(rho)
                 failures = 0
@@ -1688,8 +1680,7 @@ class SPARS2(BasePathPlanner):
             
             # 找到最近的哨兵 v
             v = min(visible_guards, key=lambda n: self._distance(rho, n))
-
-            # 4. 连通性准则 (Connectivity)
+            # 连通性准则
             comp_ids = {self.components.find(g) for g in visible_guards}
             
             if len(comp_ids) > 1:
@@ -1697,13 +1688,11 @@ class SPARS2(BasePathPlanner):
                 self._add_node(rho)
                 for g in visible_guards:
                     if self.components.find(g) != self.components.find(rho):
-                        if self._is_valid_edge(rho, g):
-                            self._add_edge(rho, g)
+                        self._add_edge(rho, g)
                 failures = 0
                 continue
 
-            # 5. 接口处理 (Interface)
-            # 尝试封闭接口，连接可见的两个哨兵
+            # 接口处理 (Interface)
             if len(visible_guards) >= 2:
                 sorted_guards = sorted(visible_guards, key=lambda n: self._distance(rho, n))
                 v1, v2 = sorted_guards[0], sorted_guards[1]
@@ -1713,9 +1702,9 @@ class SPARS2(BasePathPlanner):
                     if self._close_interface(rho, v1, v2):
                         failures = 0
 
-            # 6. 稀疏图路径优化 (Spanner Property)
+            # 稀疏图路径优化
             if rho not in self.sparse_nodes:
-                Sigma, R = self._get_close_reps(rho, v)
+                Sigma, R, graph_changed = self._get_close_reps(rho, v)
                 
                 if R:
                     added_change = False
@@ -1723,11 +1712,7 @@ class SPARS2(BasePathPlanner):
                     # 更新接口信息
                     for r, sigma in zip(R, Sigma):
                         self._update_points(rho, sigma, v, r)
-                        # 注意：这里应该是对称更新，但要注意参数顺序
-                        # 原论文逻辑暗示我们需要记录双向，这里假设无向图逻辑
-                        self._update_points(sigma, rho, r, v) # 这里可能有逻辑差异，暂时保留你的写法，重点修后面的add_path
-                    
-                    # 尝试添加路径
+                        self._update_points(sigma, rho, r, v)
                     if self._test_add_path(v):
                         added_change = True
                     
@@ -1735,7 +1720,7 @@ class SPARS2(BasePathPlanner):
                         if self._test_add_path(r):
                             added_change = True
                     
-                    if added_change:
+                    if added_change or graph_changed:
                         failures = 0
                     else:
                         failures += 1
@@ -1748,9 +1733,6 @@ class SPARS2(BasePathPlanner):
         print(f"完成。耗时: {time.time()-start_time:.2f}s, 节点: {len(self.nodes)}, 边: {len(self.edges)}")
         return self.nodes, self.edges
 
-    # ----------------------------------------------------------------
-    # 算法辅助部分
-    # ----------------------------------------------------------------
     def _get_close_reps(self, rho, v):
         Sigma = []
         R = []
@@ -1763,14 +1745,14 @@ class SPARS2(BasePathPlanner):
                 
                 if not N_sigma:
                     self._add_node(sigma)
-                    return [], []
+                    return [], [], True
                 
                 v_sigma = min(N_sigma, key=lambda n: self._distance(sigma, n))
                 
                 if v != v_sigma:
                     Sigma.append(sigma)
                     R.append(v_sigma)
-        return Sigma, R
+        return Sigma, R, False
 
     def _update_points(self, rho, sigma, v, r):
         v_neighbors = list(self.sparse_adj.get(v, {}).keys())
@@ -1780,13 +1762,11 @@ class SPARS2(BasePathPlanner):
 
             key = frozenset({r, r_prime})
             
-            # 使用 copy 防止直接修改引用导致的污染，直到确定要更新
             data = self.interface_data[v].get(key, {
                 'dist': float('inf'),
                 'point_map': {} 
             }).copy()
             
-            # 这里的 point_map 也要 copy
             data['point_map'] = data['point_map'].copy()
             
             stored_map = data['point_map']
@@ -1810,9 +1790,6 @@ class SPARS2(BasePathPlanner):
                 
                 self.interface_data[v][key] = data
 
-    # ----------------------------------------------------------------
-    # 【关键修复】安全的路径添加逻辑
-    # ----------------------------------------------------------------
     def _test_add_path(self, v):
         if v not in self.interface_data: return False
         success = False
@@ -1879,6 +1856,7 @@ class SPARS2(BasePathPlanner):
                 
         return success
 
+
     def _get_safe_connection(self, start, end, helper):
         """
         尝试连接 start 和 end。
@@ -1915,9 +1893,6 @@ class SPARS2(BasePathPlanner):
             
         return False
 
-    # ----------------------------------------------------------------
-    # 基础操作封装
-    # ----------------------------------------------------------------
     def _add_node(self, node):
         if node not in self.sparse_nodes:
             self.sparse_nodes.append(node)
@@ -3121,7 +3096,7 @@ class PRMRenderer:
 
 if __name__ == "__main__":
     # 示例使用
-    ENVIRONMENT_TYPE = "indoor" # <-- 在这里切换环境！  
+    ENVIRONMENT_TYPE = "maze" # <-- 在这里切换环境！  
     np.random.seed(42)  # 固定随机种子以获得可重复结果
     import random
     random.seed(42)
@@ -3166,7 +3141,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "odrm" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
+    generator_name = "spars" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)

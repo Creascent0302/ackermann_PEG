@@ -36,7 +36,7 @@ other_metrics = []
 
 # 环境和算法列表
 environments = ['maze', 'indoor', 'random']
-algorithms = ['delta', 'beam', 'spars']
+algorithms = ['delta', 'beam', 'spars', 'gsrm', 'odrm']
 algorithms_with_medial = ['delta', 'beam', 'beam-medial', 'spars']
 
 # 处理beam-medial数据 - 修复这里的逻辑

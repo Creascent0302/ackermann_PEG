@@ -47,7 +47,7 @@ class BasePathPlanner(ABC):
         if y < dr or y >= self.grid_height * ENV_CONFIG['cell_size'] - dr:
             return False
         
-        # 障碍物检查 - 使用多点采样
+        # 障碍物检查
         check_points = [
             (x + dr, y), (x - dr, y), (x, y + dr), (x, y - dr),
             (x + dr/np.sqrt(2), y + dr/np.sqrt(2)), 
@@ -431,3 +431,49 @@ class BasePathPlanner(ABC):
                     pairs.append((start, goal))
 
         return pairs
+
+
+    def cal_clearance(self):
+        """
+        计算路图的平均净空 (Average Clearance)。
+
+        定义：路图中所有节点到最近障碍物（含地图边界）的最小距离的均值。
+        单位与节点坐标一致（物理坐标，即 cell_size 为单位）。
+
+        - 障碍物距离：复用已有的 obstacle_kdtree，O(N log M)
+        - 边界距离：对每个节点分别计算到四条边界的最小距离
+        - 两者取 min，再对所有节点求均值
+
+        返回:
+            float: 平均净空值，越大表示路图整体离障碍/边界越远、越安全
+                节点为空时返回 0.0
+        """
+        if not self.nodes:
+            return 0.0
+
+        cs = ENV_CONFIG['cell_size']
+        nodes_array = np.array(self.nodes)  # shape: (N, 2)，物理坐标
+
+        # ── 1. 到最近障碍物的距离 ──────────────────────────────────────────────
+        if self.obstacle_kdtree is not None:
+            # query 返回 (distances, indices)，distances shape: (N,)
+            obstacle_dists, _ = self.obstacle_kdtree.query(nodes_array)
+            # KDTree 中障碍物坐标是格子中心 (ox+0.5)*cs，
+            # 查到的是到格子中心的距离，减去半个格子使结果更保守
+            obstacle_dists = np.maximum(0.0, obstacle_dists - cs * 0.5)
+        else:
+            # 没有障碍物，距离设为无穷大（由边界距离决定）
+            obstacle_dists = np.full(len(self.nodes), np.inf)
+
+        # ── 2. 到地图边界的距离 ────────────────────────────────────────────────
+        map_w = self.grid_width  * cs
+        map_h = self.grid_height * cs
+
+        boundary_dists = np.minimum(
+            np.minimum(nodes_array[:, 0],          map_w - nodes_array[:, 0]),
+            np.minimum(nodes_array[:, 1],          map_h - nodes_array[:, 1])
+        )
+
+        # ── 3. 综合净空 = min(障碍距离, 边界距离)，对所有节点求均值 ────────────
+        clearances = np.minimum(obstacle_dists, boundary_dists)
+        return float(np.mean(clearances))

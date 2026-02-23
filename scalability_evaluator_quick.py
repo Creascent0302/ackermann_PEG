@@ -1,103 +1,98 @@
+
 """
-快速可扩展性评测脚本 - 用于快速测试
+快速可扩展性评测脚本 - 用于快速验证代码正确性
+
+与完整版的唯一区别是减少了 sample_counts、num_seeds 和算法数量。
+所有核心逻辑直接复用 scalability_evaluator.py 中的函数。
 """
 
-import json
-import csv
 import os
-from datetime import datetime
-import time
-import numpy as np
-import pygame
 import sys
+import traceback
 sys.path.append('.')
-from config import ENV_CONFIG
-from generator import *
-from map_generator import generate_maze_obstacles, generate_indoor_obstacles
 
-# 导入完整版的函数
-from scalability_evaluator import run_scalability_test, save_scalability_metrics_to_file
+from scalability_evaluator import (
+    run_scalability_test,
+    save_scalability_metrics_to_file,
+    generate_fixed_test_points,
+)
+
 
 def main():
-    """主函数 - 运行快速可扩展性评测"""
-    
-    # 配置参数 - 减少测试量
-    algorithms = ['delta', 'beam', 'spars']
-    environments = ['random', 'maze', 'indoor']  # 测试所有环境
-    
-    # 更少的顶点数配置
-    node_counts = [200, 500, 1000]
-    
-    # 更少的seed数量
+    """快速可扩展性评测入口"""
+
+    algorithms   = ['delta', 'beam', 'spars', 'gsrm', 'odrm']
+    environments = ['random', 'maze', 'indoor']
+
+    # 横坐标：采样次数（比完整版更稀疏）
+    sample_counts = [200, 500, 1000]
+
     num_seeds = 3
     seeds = list(range(100, 100 + num_seeds))
-    
-    # 输出路径
+
     output_file = "./pursuer_strategies/PRM/results/scalability_evaluation.csv"
-    
-    # 删除旧的CSV文件（如果存在）
+
     if os.path.exists(output_file):
         os.remove(output_file)
         print(f"已删除旧文件: {output_file}\n")
-    
-    print("="*60)
-    print("开始快速可扩展性评测")
-    print("="*60)
-    print(f"算法: {algorithms}")
-    print(f"环境: {environments}")
-    print(f"顶点数范围: {node_counts}")
-    print(f"每个配置测试 {num_seeds} 个不同的seed")
-    print(f"总测试数: {len(algorithms) * len(environments) * len(node_counts) * num_seeds}")
-    
-    # 为每个环境生成固定的起终点对
-    print("\n生成固定的测试起终点...")
-    print("="*60)
-    from scalability_evaluator import generate_fixed_test_points
+
+    total = len(algorithms) * len(environments) * len(sample_counts) * num_seeds
+    print("=" * 60)
+    print("开始快速可扩展性评测（横坐标：采样次数）")
+    print("=" * 60)
+    print(f"算法:       {algorithms}")
+    print(f"环境:       {environments}")
+    print(f"采样次数:   {sample_counts}")
+    print(f"Seeds/配置: {num_seeds}")
+    print(f"总测试数:   {total}")
+
+    # 预生成固定起终点（复用主模块函数，确保与完整版完全一致）
+    print("\n生成固定测试起终点...")
+    print("=" * 60)
     fixed_points = {}
     for env in environments:
-        points = generate_fixed_test_points(env, num_pairs=10)
-        fixed_points[env] = points
-        print(f"{env.capitalize()}: 生成了{len(points)}对固定起终点")
-    print("="*60)
-    
-    total_tests = 0
-    successful_tests = 0
-    
-    # 遍历所有组合
+        fixed_points[env] = generate_fixed_test_points(env, num_pairs=10)
+        print(f"  {env.capitalize()}: {len(fixed_points[env])} 对")
+    print("=" * 60)
+
+    done, ok = 0, 0
     for env in environments:
         for algo in algorithms:
-            for num_nodes in node_counts:
+            for ns in sample_counts:
                 for seed in seeds:
-                    total_tests += 1
+                    done += 1
                     try:
-                        print(f"\n进度: {total_tests}/{len(algorithms) * len(environments) * len(node_counts) * num_seeds}")
-                        # 使用该环境的固定起终点
-                        metrics = run_scalability_test(algo, env, num_nodes, seed,
-                                                      fixed_point_pairs=fixed_points[env])
-                        save_scalability_metrics_to_file(metrics, output_file)
-                        successful_tests += 1
-                        print(f"✓ 成功: {algo} on {env} (nodes={num_nodes}, seed={seed})")
-                        print(f"  - 生成时间: {metrics['generation_time']:.3f}s")
-                        print(f"  - 实际节点数: {metrics['actual_nodes_count']}")
-                        print(f"  - 边数: {metrics['edges_count']}")
-                        print(f"  - 路径成功: {metrics['path_success']}")
-                        if metrics['path_success']:
-                            print(f"  - 路径长度: {metrics['path_length']:.3f}")
-                            print(f"  - 搜索时间: {metrics['search_time']:.4f}s")
-                    
+                        print(f"\n进度: {done}/{total}")
+                        m = run_scalability_test(
+                            algo, env, ns, seed,
+                            fixed_point_pairs=fixed_points[env]
+                        )
+                        save_scalability_metrics_to_file(m, output_file)
+                        ok += 1
+                        print(f"✓  {algo} | {env} | samples={ns} | seed={seed}")
+                        print(f"   生成时间={m['generation_time']:.3f}s  "
+                              f"实际节点={m['actual_nodes_count']}  "
+                              f"采样效率={m['sampling_efficiency']*100:.1f}%")
+                        print(f"   平均度={m['avg_degree']:.2f}  "
+                              f"连通比={m['largest_component_ratio']*100:.1f}%  "
+                              f"离散度={m['dispersion']:.4f}")
+                        if m['path_success'] > 0:
+                            print(f"   成功率={m['path_success']:.1f}%  "
+                                  f"路径长={m['path_length']:.3f}  "
+                                  f"优化比={m['path_optimality_ratio']:.3f}  "
+                                  f"搜索时间={m['search_time']:.4f}s")
                     except Exception as e:
-                        print(f"✗ 失败: {algo} on {env} (nodes={num_nodes}, seed={seed})")
-                        print(f"  错误: {e}")
-                        import traceback
+                        print(f"✗  {algo} | {env} | samples={ns} | seed={seed}")
+                        print(f"   错误: {e}")
                         traceback.print_exc()
-    
-    print("\n" + "="*60)
-    print("评测完成！")
-    print("="*60)
-    print(f"结果保存在: {output_file}")
-    print(f"总计测试: {total_tests} 个")
-    print(f"成功测试: {successful_tests} 个")
-    print("="*60)
+
+    print("\n" + "=" * 60)
+    print("快速评测完成！")
+    print("=" * 60)
+    print(f"结果文件: {output_file}")
+    print(f"成功/总计: {ok}/{done}")
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
