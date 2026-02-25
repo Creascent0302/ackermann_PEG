@@ -163,8 +163,6 @@ def _create_generator(algorithm_name, environment_type,
 
     elif algorithm_name == "gsrm":
         # GSRM：基于 Gray-Scott 反应扩散系统 + Delaunay 三角剖分
-        # num_samples 作为目标节点数提示传入，由算法通过调整模拟分辨率来逼近
-        # 若你的实现接口不同，请根据实际 GSRM 类的参数签名调整
         return GSRM(grid_width, grid_height, obstacles,
                     iterations=num_samples)
     else:

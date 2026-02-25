@@ -3141,7 +3141,7 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
+    generator_name = "beam" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
 
     if generator_name == "delta":
         prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
