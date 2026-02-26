@@ -63,7 +63,7 @@ class PathPRMRenderer(PRMRenderer):
         pygame.image.save(screen, filepath)
 
 # =====================================================================
-# 2. 测试与数据生成模块 (分离大范围和小范围)
+# 2. 测试与数据生成模块
 # =====================================================================
 class BeamPRMParameterTester:
     def __init__(self, environment_type="maze", num_runs=3, num_paths=50):
@@ -75,13 +75,40 @@ class BeamPRMParameterTester:
         self._generate_fixed_test_set()
 
     def _setup_environment(self):
-        if self.environment_type == "maze":
+        # 补全了 random 环境的定义，生成 40x40 大小、20% 障碍物密度的随机地图
+        if self.environment_type == "random":
+            ENV_CONFIG['gridnum_width'] = 40
+            ENV_CONFIG['gridnum_height'] = 40
+            self.grid_width = 40
+            self.grid_height = 40
+            self.obstacles = []
+            
+            # 添加边框
+            for i in range(self.grid_width):
+                self.obstacles.extend([(i, 0), (i, self.grid_height - 1)])
+            for i in range(self.grid_height):
+                self.obstacles.extend([(0, i), (self.grid_width - 1, i)])
+            self.obstacles = list(set(self.obstacles))
+            
+            # 随机添加内部障碍物块
+            np.random.seed(42)
+            total_cells = 40 * 40
+            num_obs = int(total_cells * 0.20)
+            while len(self.obstacles) < num_obs:
+                x = np.random.randint(1, self.grid_width - 1)
+                y = np.random.randint(1, self.grid_height - 1)
+                if (x, y) not in self.obstacles:
+                    self.obstacles.append((x, y))
+            self.base_connection_radius = 1.2
+            
+        elif self.environment_type == "maze":
             ENV_CONFIG['gridnum_width'] = 49
             ENV_CONFIG['gridnum_height'] = 49
             self.grid_width = ENV_CONFIG['gridnum_width']
             self.grid_height = ENV_CONFIG['gridnum_height']
             self.obstacles = generate_maze_obstacles(self.grid_width, self.grid_height)
             self.base_connection_radius = 1.5
+            
         elif self.environment_type == "indoor":
             ENV_CONFIG['gridnum_width'] = 50
             ENV_CONFIG['gridnum_height'] = 50
@@ -93,7 +120,7 @@ class BeamPRMParameterTester:
             raise ValueError("不支持的环境类型。")
 
     def _generate_fixed_test_set(self):
-        print(f"正在生成统一且具有挑战性的 {self.num_paths} 个测试起点与终点对...")
+        print(f"[{self.environment_type.upper()}] 正在生成统一且具有挑战性的 {self.num_paths} 个测试起点与终点对...")
         np.random.seed(999); random.seed(999)
         dummy_planner = BeamPRM(self.grid_width, self.grid_height, self.obstacles)
         
@@ -132,7 +159,7 @@ class BeamPRMParameterTester:
         for angle in angle_steps:
             for radius in min_radii:
                 current += 1
-                print(f"[{current}/{total_configs}] 参数: Angle={angle:2d}°, Radius={radius:.2f} ", end="", flush=True)
+                print(f"[{self.environment_type}] [{current}/{total_configs}] 参数: Angle={angle:2d}°, Radius={radius:.2f} ", end="", flush=True)
                 
                 config_results = {'times': [], 'path_lengths': [], 'search_times': [], 'success_rates': [], 'node_counts': []}
                 sample_saved = False 
@@ -206,7 +233,7 @@ class BeamPRMParameterTester:
         df = pd.DataFrame(self.results)
         if not df.empty:
             df.to_csv(csv_filename, index=False)
-            print(f"\n✅ 测试完成！数据已保存至: {csv_filename}")
+            print(f"  => 数据已保存至: {csv_filename}")
         return df
 
 # =====================================================================
@@ -214,7 +241,7 @@ class BeamPRMParameterTester:
 # =====================================================================
 def load_data(filepath):
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"找不到数据 {filepath}，请先使用 '--action test' 生成数据。")
+        raise FileNotFoundError(f"找不到数据 {filepath}")
     return pd.read_csv(filepath)
 
 def style_academic_contour(ax, x, y, z, title, cbar_label, z_min, z_max):
@@ -229,176 +256,176 @@ def style_academic_contour(ax, x, y, z, title, cbar_label, z_min, z_max):
     Zi = griddata((x, y), z, (Xi, Yi), method='cubic')
     Zi = np.clip(Zi, z_min, z_max)
     
-    # 1. 绘制等高线热力图 (使用viridis_r: 紫高黄低)
-    c = ax.contourf(Xi, Yi, Zi, levels=60, cmap='viridis_r', extend='both', zorder=0)
+    # [修改] 强制所有的等高线分层使用绝对范围 z_min 到 z_max，保证三个环境的颜色含义绝对统一
+    levels = np.linspace(z_min, z_max, 60)
+    c = ax.contourf(Xi, Yi, Zi, levels=levels, cmap='viridis_r', extend='both', zorder=0)
     
-    # 2. 绘制黑色采样点 'x'
     ax.scatter(x, y, c='black', s=25, alpha=0.9, marker='x', zorder=2)
     
-    # 3. 字体与标题排版
     ax.set_title(title, color='black', fontsize=14, pad=12, fontweight='bold')
     ax.set_xlabel("Angle Step (deg)", color='black', fontsize=12)
     ax.set_ylabel("Min Radius", color='black', fontsize=12)
     ax.tick_params(colors='black', labelsize=11)
     
-    # 4. 强制网格线显示在颜色之上
     ax.grid(True, color='silver', linestyle='--', linewidth=1.0, alpha=0.9)
-    ax.set_axisbelow(False) # 关键代码：禁止网格线被填充图层遮挡
+    ax.set_axisbelow(False) 
     
-    # 5. 加粗图表边框
     for spine in ax.spines.values():
         spine.set_color('black')
         spine.set_linewidth(1.5)
         spine.set_zorder(3)
         
-    # 6. 配置侧边颜色栏
     cbar = plt.colorbar(c, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label(cbar_label, color='black', fontsize=12)
     cbar.ax.yaxis.set_tick_params(color='black')
     plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='black')
 
-# --- 图1: 单独的大范围成功率大图 (全面升级为平滑热力图) ---
-def plot_standalone_success_rate(df, env_name):
-    X = df['Angle Step (deg)'].values
-    Y = df['Min Radius'].values
-    Z_succ = df['Success Rate'].values
+# --- 图1: 三环境全局大范围成功率图 (1行3列) ---
+def plot_standalone_success_rate_all(dfs_dict):
+    fig = plt.figure(figsize=(20, 5), facecolor='white')
+    fig.suptitle("Global Pathfinding Success Rate Distribution", fontsize=18, fontweight='bold', y=1.05)
     
-    plt.style.use('default')
-    fig = plt.figure(figsize=(9, 7), facecolor='white')
-    ax = fig.add_subplot(111)
-    
-    style_academic_contour(ax, X, Y, Z_succ, 
-                          "Global Pathfinding Success Rate Distribution", 
-                          "Success Rate", 0.0, 1.0)
+    for i, (env_name, df) in enumerate(dfs_dict.items()):
+        X = df['Angle Step (deg)'].values
+        Y = df['Min Radius'].values
+        Z_succ = df['Success Rate'].values
+        
+        ax = fig.add_subplot(1, 3, i + 1)
+        # 成功率的统一标尺就是 0.0 到 1.0
+        style_academic_contour(ax, X, Y, Z_succ, 
+                              f"Env: {env_name.capitalize()}", 
+                              "Success Rate", 0.0, 1.0)
     
     plt.tight_layout()
-    save_path = f'plot1_success_rate_{env_name}.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+    # [修改] 保存为高质量 svg 矢量图
+    save_path = 'plot1_success_rate_all.svg'
+    plt.savefig(save_path, format='svg', bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"已生成图1 (全局大范围成功率等高热力图): {save_path}")
+    print(f"✅ 已生成图1 (三大环境全局成功率大图): {save_path}")
 
-# --- 图2: 小范围局部综合栅格图 (仅统一色彩为 viridis_r) ---
-def plot_classic_grid(df, env_name):
-    plt.style.use('default')
+# --- 图2: 三环境局部综合栅格图 (3行2列) ---
+def plot_classic_grid_all(dfs_dict):
     sns.set_theme(style="whitegrid")
-    fig = plt.figure(figsize=(16, 14), facecolor='white')
-    fig.suptitle("Sweet Spot Analysis - Classic Grid Maps", fontsize=24, fontweight='bold', y=0.96)
+    fig = plt.figure(figsize=(12, 14), facecolor='white')
+    fig.suptitle("Sweet Spot Analysis - Classic Grid Maps (Node Density & Success Rate)", fontsize=22, fontweight='bold', y=0.98)
     
-    max_len = df['Avg Path Length'].max()
-    penalty_len = max_len * 1.1 if not pd.isna(max_len) else 100
+    # [修改] 提取三大环境的全局节点数最小和最大值
+    global_min_nodes = min(df['Avg Nodes'].min() for df in dfs_dict.values())
+    global_max_nodes = max(df['Avg Nodes'].max() for df in dfs_dict.values())
+    
+    for i, (env_name, df) in enumerate(dfs_dict.items()):
+        row_offset = i * 2  
+        
+        # 第一列：节点密度
+        ax1 = fig.add_subplot(3, 2, row_offset + 1)
+        pivot_nodes = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Avg Nodes')
+        # [修改] 传入 vmin 和 vmax 参数以保证三个子图的数值-颜色映射完全统一
+        sns.heatmap(pivot_nodes, annot=True, fmt=".0f", cmap='viridis_r', ax=ax1, 
+                    vmin=global_min_nodes, vmax=global_max_nodes, 
+                    cbar_kws={'label': 'Node Count'})
+        ax1.set_title(f'[{env_name.capitalize()}] Generated Node Density', fontsize=14, pad=10, fontweight='bold')
+        ax1.invert_yaxis()
 
-    ax1 = fig.add_subplot(221)
-    pivot_nodes = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Avg Nodes')
-    sns.heatmap(pivot_nodes, annot=True, fmt=".0f", cmap='viridis_r', ax=ax1, cbar_kws={'label': 'Node Count'})
-    ax1.set_title('Generated Node Density', fontsize=16, pad=10, fontweight='bold')
-    ax1.invert_yaxis()
+        # 第二列：成功率
+        ax2 = fig.add_subplot(3, 2, row_offset + 2)
+        pivot_succ = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Success Rate')
+        # [修改] vmin=0, vmax=1 原来就有，保证了成功率颜色是一致的
+        sns.heatmap(pivot_succ, annot=True, fmt=".0%", cmap='viridis_r', vmin=0, vmax=1, ax=ax2, cbar_kws={'label': 'Success Rate'})
+        ax2.set_title(f'[{env_name.capitalize()}] Pathfinding Success Rate', fontsize=14, pad=10, fontweight='bold')
+        ax2.invert_yaxis()
 
-    ax2 = fig.add_subplot(222)
-    pivot_time = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Avg Gen Time (s)')
-    sns.heatmap(pivot_time, annot=True, fmt=".2f", cmap='viridis_r', ax=ax2, cbar_kws={'label': 'Time (s)'})
-    ax2.set_title('Avg PRM Generation Time (s)', fontsize=16, pad=10, fontweight='bold')
-    ax2.invert_yaxis()
-
-    ax3 = fig.add_subplot(223)
-    pivot_succ = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Success Rate')
-    sns.heatmap(pivot_succ, annot=True, fmt=".0%", cmap='viridis_r', vmin=0, vmax=1, ax=ax3, cbar_kws={'label': 'Success Rate'})
-    ax3.set_title('Pathfinding Success Rate', fontsize=16, pad=10, fontweight='bold')
-    ax3.invert_yaxis()
-
-    ax4 = fig.add_subplot(224)
-    pivot_len = df.pivot(index='Min Radius', columns='Angle Step (deg)', values='Avg Path Length')
-    annot_len = pivot_len.copy()
-    annot_len = annot_len.applymap(lambda x: "Fail" if pd.isna(x) else f"{x:.1f}")
-    pivot_len_filled = pivot_len.fillna(penalty_len)
-    sns.heatmap(pivot_len_filled, annot=annot_len, fmt="", cmap='viridis_r', ax=ax4, cbar_kws={'label': 'Physical Path Length'})
-    ax4.set_title('Avg Euclidean Path Length (Fail=No Path)', fontsize=16, pad=10, fontweight='bold')
-    ax4.invert_yaxis()
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    save_path = f'plot2_classic_grid_{env_name}.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.tight_layout(rect=[0, 0.02, 1, 0.95])
+    # [修改] 保存为高质量 svg 矢量图
+    save_path = 'plot2_classic_grid_all.svg'
+    plt.savefig(save_path, format='svg', bbox_inches='tight', facecolor='white')
     plt.close(fig)
-    print(f"已生成图2 (局部甜点区经典方块栅格图): {save_path}")
+    print(f"✅ 已生成图2 (三大环境经典方块栅格图): {save_path}")
 
-# --- 图3: 小范围局部平滑插值热力图 (全面匹配示例图质感) ---
-def plot_smooth_contours(df, env_name):
-    X = df['Angle Step (deg)'].values
-    Y = df['Min Radius'].values
-    
+# --- 图3: 三环境局部平滑插值热力图 (3行2列) ---
+def plot_smooth_contours_all(dfs_dict):
     plt.style.use('default')
-    fig = plt.figure(figsize=(16, 14), facecolor='white')
-    fig.suptitle("Sweet Spot Analysis - Smooth Contour Maps", fontsize=24, fontweight='bold', color='black', y=0.96)
+    fig = plt.figure(figsize=(14, 16), facecolor='white')
+    fig.suptitle("Sweet Spot Analysis - Smooth Contour Maps (Node Density & Success Rate)", fontsize=22, fontweight='bold', color='black', y=0.96)
     
-    ax1 = fig.add_subplot(221)
-    Z_nodes = df['Avg Nodes'].values
-    style_academic_contour(ax1, X, Y, Z_nodes, "Generated Node Density", "Node Count", Z_nodes.min(), Z_nodes.max())
+    # [修改] 提取三大环境的全局节点数最小和最大值
+    global_min_nodes = min(df['Avg Nodes'].min() for df in dfs_dict.values())
+    global_max_nodes = max(df['Avg Nodes'].max() for df in dfs_dict.values())
+    
+    for i, (env_name, df) in enumerate(dfs_dict.items()):
+        row_offset = i * 2  
+        X = df['Angle Step (deg)'].values
+        Y = df['Min Radius'].values
+        
+        # 第一列：节点密度
+        ax1 = fig.add_subplot(3, 2, row_offset + 1)
+        Z_nodes = df['Avg Nodes'].values
+        # [修改] 原先使用 Z_nodes.min() 和 Z_nodes.max()，现在替换为统一的 global_min_nodes 和 global_max_nodes
+        style_academic_contour(ax1, X, Y, Z_nodes, 
+                               f"[{env_name.capitalize()}] Generated Node Density", 
+                               "Node Count", global_min_nodes, global_max_nodes)
 
-    ax2 = fig.add_subplot(222)
-    Z_time = df['Avg Gen Time (s)'].values
-    style_academic_contour(ax2, X, Y, Z_time, "Avg PRM Generation Time (s)", "Time (s)", Z_time.min(), Z_time.max())
+        # 第二列：成功率
+        ax2 = fig.add_subplot(3, 2, row_offset + 2)
+        Z_succ = df['Success Rate'].values
+        style_academic_contour(ax2, X, Y, Z_succ, 
+                               f"[{env_name.capitalize()}] Pathfinding Success Rate", 
+                               "Success Rate", 0.0, 1.0)
 
-    ax3 = fig.add_subplot(223)
-    Z_succ = df['Success Rate'].values
-    style_academic_contour(ax3, X, Y, Z_succ, "Pathfinding Success Rate", "Success Rate", 0.0, 1.0)
-
-    ax4 = fig.add_subplot(224)
-    valid_len_mask = ~np.isnan(df['Avg Path Length'].values)
-    max_len = np.nanmax(df['Avg Path Length'].values) if np.any(valid_len_mask) else 100
-    min_len = np.nanmin(df['Avg Path Length'].values) if np.any(valid_len_mask) else 0
-    penalty_len = max_len * 1.05
-    Z_len = np.where(np.isnan(df['Avg Path Length'].values), penalty_len, df['Avg Path Length'].values)
-    style_academic_contour(ax4, X, Y, Z_len, "Average Euclidean Path Length", "Path Length", min_len, penalty_len)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    save_path = f'plot3_smooth_contour_{env_name}.png'
-    plt.savefig(save_path, dpi=300, facecolor='white', edgecolor='none', bbox_inches='tight')
+    plt.tight_layout(rect=[0, 0.02, 1, 0.93])
+    # [修改] 保存为高质量 svg 矢量图
+    save_path = 'plot3_smooth_contour_all.svg'
+    plt.savefig(save_path, format='svg', facecolor='white', edgecolor='none', bbox_inches='tight')
     plt.close(fig)
-    print(f"已生成图3 (局部甜点区平滑等高热力图): {save_path}")
+    print(f"✅ 已生成图3 (三大环境平滑等高热力图): {save_path}")
 
 # =====================================================================
-# 4. 命令行接口 (CLI) 
+# 4. 主程序控制流程
 # =====================================================================
 def main():
     parser = argparse.ArgumentParser(description="BeamPRM 敏感度测试与多图生成")
     parser.add_argument("--action", type=str, choices=["test", "plot", "both"], default="both", 
                         help="'test':跑测试, 'plot':只画图, 'both':先跑后画(默认)")
-    parser.add_argument("--env", type=str, choices=["maze", "indoor"], default="maze")
     parser.add_argument("--budget", type=int, default=1000)
     args = parser.parse_args()
 
-    env = args.env
-    csv_large = f'sensitivity_data_large_{env}.csv'
-    csv_small = f'sensitivity_data_small_{env}.csv'
+    envs = ["random", "maze", "indoor"]
     
-    test_angles = [1, 3, 6, 9, 12, 15]          
-    
-    # 第一组：大范围半径 
-    test_radii_large = [0.2, 0.4, 0.6, 0.8, 1.0]  
-    # 第二组：小范围半径 
-    test_radii_small = [0.2, 0.25, 0.3, 0.35, 0.4]
+    test_angles = [3, 5, 15, 20, 25, 30, 40, 45]          
+    test_radii_large = [0.2, 0.4, 0.6, 0.8]  
+    test_radii_small = [0.2, 0.3, 0.4, 0.5, 0.6, 0.8]
 
     if args.action in ["test", "both"]:
-        print(f"\n[{env.upper()}] === 阶段 1: 测试大范围全局参数 (用于图1) ===")
-        tester_large = BeamPRMParameterTester(environment_type=env, num_runs=3, num_paths=50)
-        tester_large.run_tests(test_angles, test_radii_large, node_budget=args.budget, save_samples=False, csv_filename=csv_large)
+        print("========== 阶段 1: 批量运行三大环境测试 ==========")
+        for env in envs:
+            csv_large = f'sensitivity_data_large_{env}.csv'
+            csv_small = f'sensitivity_data_small_{env}.csv'
+            
+            print(f"\n---> 开始环境: {env.upper()}")
+            tester = BeamPRMParameterTester(environment_type=env, num_runs=3, num_paths=50)
+            
+            print(f"  > 1.1 大范围全局参数 (用于图1)")
+            tester.run_tests(test_angles, test_radii_large, node_budget=args.budget, save_samples=False, csv_filename=csv_large)
 
-        print(f"\n[{env.upper()}] === 阶段 2: 测试小范围局部参数 (用于图2、图3) ===")
-        tester_small = BeamPRMParameterTester(environment_type=env, num_runs=3, num_paths=50)
-        tester_small.run_tests(test_angles, test_radii_small, node_budget=args.budget, save_samples=True, csv_filename=csv_small)
-    
+            print(f"  > 1.2 小范围局部参数 (用于图2、图3)")
+            tester.run_tests(test_angles, test_radii_small, node_budget=args.budget, save_samples=True, csv_filename=csv_small)
+
     if args.action in ["plot", "both"]:
-        print(f"\n[{env.upper()}] === 开始生成学术图表 ===")
+        print("\n========== 阶段 2: 合并生成学术大图 ==========")
         try:
-            df_large = load_data(csv_large)
-            plot_standalone_success_rate(df_large, env)
+            dfs_large = {}
+            dfs_small = {}
+            for env in envs:
+                dfs_large[env] = load_data(f'sensitivity_data_large_{env}.csv')
+                dfs_small[env] = load_data(f'sensitivity_data_small_{env}.csv')
             
-            df_small = load_data(csv_small)
-            plot_classic_grid(df_small, env)
-            plot_smooth_contours(df_small, env)
+            plot_standalone_success_rate_all(dfs_large)
+            plot_classic_grid_all(dfs_small)
+            plot_smooth_contours_all(dfs_small)
             
-            print("\n✅ 绘图任务全部完成！")
+            print("\n🎉 全部绘图任务圆满完成！输出文件均为高质量 svg 格式。")
+            
         except FileNotFoundError as e:
-            print(f"❌ {e}")
+            print(f"❌ 读取数据失败: {e} \n(提示：请先使用 '--action test' 完整生成数据)")
 
 if __name__ == "__main__":
     main()
