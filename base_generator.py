@@ -19,7 +19,7 @@ class BasePathPlanner(ABC):
         self.obstacles = set(obstacles)  # 转换为set提高查询效率
         self.nodes = []
         self.edges = []
-        
+        self._adj_cache = None
         # 通用参数
         self.collision_radius = kwargs.get('collision_radius', 2 * ENV_CONFIG['agent_collision_radius'] / 3)
         self.step_size = kwargs.get('step_size', 0.1)
@@ -331,8 +331,8 @@ class BasePathPlanner(ABC):
         return np.max(discrepancies)
     
     def find_path(self, start, goal):
-        """使用A*算法在路图中查找从start到goal的路径"""     
-        start_time = time.time()   
+        """使用A*算法在路图中查找从start到goal的路径"""
+
         if not self._is_valid_position(start[0], start[1]):
             raise ValueError("Start position is invalid or in collision.")
         if not self._is_valid_position(goal[0], goal[1]):
@@ -343,38 +343,51 @@ class BasePathPlanner(ABC):
         if not self.nodes:
             raise ValueError("Cannot generate any nodes in the PRM.")
 
-        adjacency = {node: {} for node in self.nodes}
-        for edge in self.edges:
-            u, v = edge
-            dist = self._distance(u, v)
-            adjacency[u][v] = dist
-            adjacency[v][u] = dist
-        
+        if self._adj_cache is None:
+            adj_cache = {node: {} for node in self.nodes}
+            for edge in self.edges:
+                u, v = edge
+                dist = self._distance(u, v)
+                adj_cache[u][v] = dist
+                adj_cache[v][u] = dist
+            self._adj_cache = adj_cache
+
+        start_time = time.time()
+
+        adjacency = dict(self._adj_cache)
         adjacency[start] = {}
         adjacency[goal] = {}
         start_connected = False
         goal_connected = False
+
         for node in self.nodes:
             if self._is_valid_edge(start, node):
                 dist = self._distance(start, node)
                 adjacency[start][node] = dist
+                # 反向边需深拷贝，避免修改缓存内的邻居字典
+                if adjacency[node] is self._adj_cache.get(node):
+                    adjacency[node] = dict(self._adj_cache[node])
                 adjacency[node][start] = dist
                 start_connected = True
             if self._is_valid_edge(goal, node):
                 dist = self._distance(goal, node)
                 adjacency[goal][node] = dist
+                if adjacency[node] is self._adj_cache.get(node):
+                    adjacency[node] = dict(self._adj_cache[node])
                 adjacency[node][goal] = dist
                 goal_connected = True
-        
+
         if not start_connected or not goal_connected:
             return None, None, None, time.time() - start_time
 
+        # A* 搜索（原有逻辑完全不变）
         open_set = []
         open_set.append((self._distance(start, goal), start))
         open_set_nodes = {start}
         backtrack = {}
         g_score = {start: 0}
         visited = set()
+
         while open_set:
             current_f, current = heapq.heappop(open_set)
             if current in visited:
@@ -390,14 +403,16 @@ class BasePathPlanner(ABC):
                     tmp_node = backtrack[tmp_node]
                 path_nodes.append(start)
                 path_nodes.reverse()
-                
+
                 path_nodes = self.backward_prune_path(path_nodes)
                 path_edges = []
                 for i in range(len(path_nodes) - 1):
                     path_edges.append((path_nodes[i], path_nodes[i + 1]))
-                
-                path_length = sum(self._distance(path_nodes[i], path_nodes[i + 1]) for i in range(len(path_nodes) - 1))
 
+                path_length = sum(
+                    self._distance(path_nodes[i], path_nodes[i + 1])
+                    for i in range(len(path_nodes) - 1)
+                )
                 return path_nodes, path_edges, path_length, time.time() - start_time
 
             else:
@@ -413,8 +428,8 @@ class BasePathPlanner(ABC):
                             heapq.heappush(open_set, (f_score, neighbor))
                             open_set_nodes.add(neighbor)
 
-        return None, None, None, time.time() - start_time
-    
+        return None, None, None, time.time() - start_time 
+
     def generate_valid_point_pairs(self, num_pairs):
         """生成指定数量的有效起终点对"""
         pairs = []
@@ -477,3 +492,89 @@ class BasePathPlanner(ABC):
         # ── 3. 综合净空 = min(障碍距离, 边界距离)，对所有节点求均值 ────────────
         clearances = np.minimum(obstacle_dists, boundary_dists)
         return float(np.mean(clearances))
+    
+    def calculate_spatial_coverage(self, num_test_paths=50):
+        """
+        计算单位节点空间覆盖率 (Spatial Coverage per Node)。
+
+        公式：U_spatial = L_path / N_total
+            L_path   : 单次成功路径的实际物理长度（欧氏累计距离）
+            N_total  : 路图的总节点数（固定值，与具体路径无关）
+
+        物理意义：
+            稠密图 N_total 极大 → 指标偏低
+            稀疏图用少量节点支撑同等路径长度 → 指标显著偏高
+            直接体现节点的空间利用效率
+
+        参数:
+            num_test_paths: 测试路径对数量
+
+        返回:
+            dict:
+                avg_spatial_coverage  : 所有成功路径的 U_spatial 均值  ← 核心指标
+                std_spatial_coverage  : 标准差
+                total_nodes           : 路图总节点数 N_total
+                successful_paths      : 成功找到路径的次数
+                avg_path_length       : 成功路径的平均物理长度
+        """
+        empty_result = {
+            'avg_spatial_coverage': 0.0,
+            'std_spatial_coverage': 0.0,
+            'total_nodes':          0,
+            'successful_paths':     0,
+            'avg_path_length':      0.0,
+        }
+
+        if not self.nodes or len(self.nodes) < 2:
+            return empty_result
+
+        N_total = len(self.nodes)          # 分母：固定不变
+        coverage_list = []                 # 每条成功路径的 U_spatial
+        path_length_list = []              # 每条成功路径的 L_path
+
+        valid_pairs = self.generate_valid_point_pairs(num_test_paths)
+
+        for start, goal in valid_pairs:
+            try:
+                result = self.find_path(start, goal)
+                if not result:
+                    continue
+
+                # 兼容 find_path 返回 (path_nodes, path_edges, path_length, t)
+                if isinstance(result, tuple) and len(result) >= 3:
+                    path_nodes  = result[0]
+                    path_length = result[2]   # 已由 find_path 计算好的物理长度
+                else:
+                    continue
+
+                if not path_nodes or len(path_nodes) < 2:
+                    continue
+
+                # 若 find_path 返回的 path_length 为 None，手动计算
+                if path_length is None:
+                    path_length = sum(
+                        self._distance(path_nodes[i], path_nodes[i + 1])
+                        for i in range(len(path_nodes) - 1)
+                    )
+
+                L_path     = float(path_length)
+                U_spatial  = L_path / N_total        # 核心公式
+
+                coverage_list.append(U_spatial)
+                path_length_list.append(L_path)
+
+            except Exception:
+                continue
+
+        successful_paths = len(coverage_list)
+        if successful_paths == 0:
+            return {**empty_result, 'total_nodes': N_total}
+
+        return {
+            'avg_spatial_coverage': float(np.mean(coverage_list)),    # ← 核心指标
+            'std_spatial_coverage': float(np.std(coverage_list)),
+            'total_nodes':          N_total,
+            'successful_paths':     successful_paths,
+            'avg_path_length':      float(np.mean(path_length_list)),
+        }
+

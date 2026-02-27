@@ -1953,12 +1953,6 @@ class SPARS2(BasePathPlanner):
                     self.edges.append((u, v))
                     seen.add(edge_key)
 
-from scipy.signal import convolve2d
-from scipy.spatial import Delaunay
-import numpy as np
-import time
-import matplotlib.pyplot as plt
-
 class GSRM(BasePathPlanner):
     def __init__(self, grid_width, grid_height, obstacles, 
                  upscale_factor=6,    
@@ -2166,7 +2160,6 @@ class GSRM(BasePathPlanner):
         plt.savefig(filename)
         plt.close()
 
-    # ★ 修复点①：加 None 守卫；修复点②：max_attempts 从 *10 改为 *100
     def generate_valid_point_pairs(self, num_pairs):
         """生成指定数量的有效起终点对，返回世界坐标"""
         pairs = []

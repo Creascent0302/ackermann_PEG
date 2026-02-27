@@ -39,9 +39,6 @@ def save_test_snapshot(grid_width, grid_height, nodes, edges, obstacles,
     except Exception as e:
         print(f"\n[警告] 渲染快照 {filename} 失败: {e}")
 
-# =====================================================================
-# 数据保存
-# =====================================================================
 def save_scalability_metrics_to_file(metrics, filepath):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     file_exists = os.path.exists(filepath)
@@ -51,30 +48,20 @@ def save_scalability_metrics_to_file(metrics, filepath):
             writer.writerow([
                 'timestamp', 'algorithm', 'environment', 'num_samples', 'seed',
                 'generation_time', 'search_time', 'path_length', 'edges_count',
-                'path_success_rate', 'dispersion', 'node_utilization', 'clearance'
+                'path_success_rate',
+                'spatial_coverage'          # ★ 改：node_utilization → spatial_coverage
             ])
         writer.writerow([
             metrics['timestamp'], metrics['algorithm'], metrics['environment'],
             metrics['num_samples'], metrics['seed'],
             metrics['generation_time'], metrics['search_time'], metrics['path_length'],
-            metrics['edges_count'], metrics['path_success'], metrics['dispersion'],
-            metrics['node_utilization'], metrics['clearance']
+            metrics['edges_count'], metrics['path_success'],
+            metrics['spatial_coverage']     # ★ 改：node_utilization → spatial_coverage
         ])
 
-# =====================================================================
-# ★ 新增：失败日志写入函数
-#   failure_type:
-#     'NO_POINT_PAIRS'  → generate_valid_point_pairs 返回空列表
-#     'PATH_NOT_FOUND'  → find_path 返回 None（图连通性不足）
-#     'EXCEPTION'       → find_path 抛出异常
-# =====================================================================
 def log_failure(log_filepath, failure_type, algorithm, environment,
                 num_samples, seed, start=None, goal=None,
                 exception_msg=None, exception_tb=None):
-    """
-    向失败日志文件写入一条结构化记录。
-    文件格式：人类可读的分隔块，兼顾机器解析。
-    """
     os.makedirs(os.path.dirname(log_filepath), exist_ok=True)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -93,12 +80,10 @@ def log_failure(log_filepath, failure_type, algorithm, environment,
 
         if failure_type == 'NO_POINT_PAIRS':
             f.write("  reason      : generate_valid_point_pairs() returned empty list.\n")
-            f.write("                可能原因: 节点数量不足 / 障碍物密度过高 / GSRM化学仿真未收敛\n")
-
+            f.write("                可能原因: 节点不足 / 障碍物密度过高 / GSRM未收敛\n")
         elif failure_type == 'PATH_NOT_FOUND':
             f.write("  reason      : find_path() returned None — 图中起终点不连通\n")
-            f.write("                可能原因: 图连通性不足 / 起终点被孤立 / 节点数过少\n")
-
+            f.write("                可能原因: 图连通性不足 / 起终点孤立 / 节点数过少\n")
         elif failure_type == 'EXCEPTION':
             f.write(f"  exception   : {exception_msg}\n")
             if exception_tb:
@@ -127,8 +112,7 @@ def generate_environment_obstacles(environment_type):
         obstacles = generate_indoor_obstacles(grid_width, grid_height)
     elif environment_type == "random":
         grid_width, grid_height = 40, 40
-        total_cells = grid_width * grid_height
-        num_obstacles = int(total_cells * 0.25)
+        num_obstacles = int(grid_width * grid_height * 0.25)
         obstacles = []
         for i in range(grid_width):
             obstacles.extend([(i, 0), (i, grid_height - 1),
@@ -193,7 +177,7 @@ def _create_generator(algorithm_name, environment_type,
         raise ValueError(f"Unknown algorithm: {algorithm_name}")
 
 # =====================================================================
-# 核心测试函数（新增 log_filepath 参数）
+# 核心测试函数
 # =====================================================================
 def run_scalability_test(algorithm_name, environment_type,
                          num_samples, seed, num_path_tests, log_filepath):
@@ -201,33 +185,27 @@ def run_scalability_test(algorithm_name, environment_type,
     np.random.seed(seed)
     random.seed(seed)
 
-    # ── 建图 ──────────────────────────────────────────────────────────
-    start_time = time.time()
-    generator  = _create_generator(algorithm_name, environment_type,
-                                   grid_width, grid_height, obstacles, num_samples)
+    # ── 建图（generation_time = 仿真/采样 + 建邻接表，不含寻路）──────
+    t0 = time.time()
+    generator = _create_generator(algorithm_name, environment_type,
+                                  grid_width, grid_height, obstacles, num_samples)
     if algorithm_name == "beam":
         result = generator.generate_prm()
         nodes, edges = result[0], result[1]
     else:
         nodes, edges = generator.generate_prm()
-    generation_time = time.time() - start_time
+    generation_time = time.time() - t0
 
     # ── 取点 ──────────────────────────────────────────────────────────
     point_pairs = generator.generate_valid_point_pairs(num_path_tests)
 
-    # ★ 失败类型①：无法生成任何有效点对
     if not point_pairs:
-        print(f"\n  -> [警告] {algorithm_name} 在 {environment_type} 无法生成有效点对，跳过寻路测试")
-        log_failure(
-            log_filepath      = log_filepath,
-            failure_type      = 'NO_POINT_PAIRS',
-            algorithm         = algorithm_name,
-            environment       = environment_type,
-            num_samples       = num_samples,
-            seed              = seed,
-        )
+        print(f"\n  -> [警告] {algorithm_name} 在 {environment_type} "
+              f"无法生成有效点对，跳过寻路测试")
+        log_failure(log_filepath, 'NO_POINT_PAIRS',
+                    algorithm_name, environment_type, num_samples, seed)
 
-    # ── 寻路 ──────────────────────────────────────────────────────────
+    # ── 寻路（search_time 来自 find_path 内部精确计时）────────────────
     successful_paths   = []
     total_path_tests   = 0
     first_success_path = None
@@ -239,44 +217,26 @@ def run_scalability_test(algorithm_name, environment_type,
                 generator.find_path(start, goal)
 
             if path_nodes and len(path_nodes) > 0:
-                # 寻路成功
                 successful_paths.append({
                     'path_length': path_length,
-                    'search_time': search_time
+                    'search_time': search_time   # ★ 来自算法内部，精确计时
                 })
                 if first_success_path is None:
                     first_success_path = path_nodes
             else:
-                # ★ 失败类型②：find_path 返回 None（图不连通）
-                log_failure(
-                    log_filepath  = log_filepath,
-                    failure_type  = 'PATH_NOT_FOUND',
-                    algorithm     = algorithm_name,
-                    environment   = environment_type,
-                    num_samples   = num_samples,
-                    seed          = seed,
-                    start         = start,
-                    goal          = goal,
-                )
+                log_failure(log_filepath, 'PATH_NOT_FOUND',
+                            algorithm_name, environment_type, num_samples, seed,
+                            start=start, goal=goal)
 
         except Exception as e:
-            # ★ 失败类型③：find_path 抛出异常
             tb_str = traceback.format_exc()
             print(f"\n  -> [寻路内部错误] {start} to {goal}: {e}")
-            log_failure(
-                log_filepath  = log_filepath,
-                failure_type  = 'EXCEPTION',
-                algorithm     = algorithm_name,
-                environment   = environment_type,
-                num_samples   = num_samples,
-                seed          = seed,
-                start         = start,
-                goal          = goal,
-                exception_msg = str(e),
-                exception_tb  = tb_str,
-            )
+            log_failure(log_filepath, 'EXCEPTION',
+                        algorithm_name, environment_type, num_samples, seed,
+                        start=start, goal=goal,
+                        exception_msg=str(e), exception_tb=tb_str)
 
-    # ── 留存快照 ──────────────────────────────────────────────────────
+    # ── 快照留存 ──────────────────────────────────────────────────────
     if seed == 100 and num_samples == 1000:
         save_test_snapshot(grid_width, grid_height, nodes, edges, obstacles,
                            environment_type, algorithm_name,
@@ -291,30 +251,16 @@ def run_scalability_test(algorithm_name, environment_type,
              if successful_paths else 0.0
     edges_count = len(edges)
 
-    # ── 高级指标 ──────────────────────────────────────────────────────
-    dispersion = node_utilization = clearance = 0.0
-
+    # ── 节点利用率（★ 仅保留此一个高级指标）─────────────────────────
+    # ── 单位节点空间覆盖率（替换原节点利用率）────────────────────────
+    spatial_coverage = 0.0
     try:
-        if hasattr(generator, 'cal_dispersion'):
-            dispersion = generator.cal_dispersion(num_samples=200)
+        if hasattr(generator, 'calculate_spatial_coverage'):      # ★ 改
+            ur = generator.calculate_spatial_coverage(num_test_paths=20)
+            spatial_coverage = ur['avg_spatial_coverage'] if isinstance(ur, dict) else ur
     except Exception as e:
-        print(f"\n  -> [Dispersion 计算报错]: {e}")
-
-    try:
-        if hasattr(generator, 'calculate_node_utilization'):
-            ur = generator.calculate_node_utilization(num_test_paths=20)
-            node_utilization = ur['avg_utilization'] if isinstance(ur, dict) else ur
-        elif hasattr(generator, 'cal_node_utilization'):
-            ur = generator.cal_node_utilization(num_test_paths=20)
-            node_utilization = ur['avg_utilization'] if isinstance(ur, dict) else ur
-    except Exception as e:
-        print(f"\n  -> [利用率 计算报错]: {e}")
-
-    try:
-        if hasattr(generator, 'cal_clearance'):
-            clearance = generator.cal_clearance()
-    except Exception as e:
-        print(f"\n  -> [Clearance 计算报错]: {e}")
+        print(f"\n  -> [空间覆盖率 计算报错]: {e}")
+    # ★ 已删除: dispersion / clearance 计算块
 
     return {
         'timestamp':        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -327,14 +273,9 @@ def run_scalability_test(algorithm_name, environment_type,
         'path_length':      round(p_len, 4),
         'edges_count':      edges_count,
         'path_success':     round(success_rate, 2),
-        'dispersion':       round(dispersion, 4),
-        'node_utilization': round(node_utilization, 4),
-        'clearance':        round(clearance, 4)
+        'spatial_coverage': round(spatial_coverage, 6), 
     }
 
-# =====================================================================
-# 入口
-# =====================================================================
 def main():
     parser = argparse.ArgumentParser(description="PRM Algorithms Scalability Evaluator")
     parser.add_argument('--fast', action='store_true',
@@ -342,39 +283,36 @@ def main():
     args = parser.parse_args()
 
     if args.fast:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("⚠️  开启 FAST_MODE 快速验证模式")
-        print("  测试 [delta, beam, spars, gsrm] 算法在所有环境下的少样本表现")
-        print("="*50 + "\n")
-        algorithms    = ['delta', 'beam', 'spars', 'gsrm']
-        environments  = ['random', 'maze', 'indoor']
-        sample_counts = [100, 200, 300, 500, 800, 1000, 1500, 2000]
-        seeds         = [100]
+        print("=" * 50 + "\n")
+        algorithms     = ['delta', 'beam', 'spars', 'gsrm']
+        environments   = ['random', 'maze', 'indoor']
+        sample_counts  = [100, 200, 300, 500, 800, 1000, 1500, 2000]
+        seeds          = [100]
         num_path_tests = 5
     else:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("🚀  开启 FULL_MODE 完整可扩展性评测")
-        print("="*50 + "\n")
-        algorithms    = ['delta', 'beam', 'spars', 'gsrm']
-        environments  = ['random', 'maze', 'indoor']
-        sample_counts = [100, 200, 300, 500, 800, 1000, 1500, 2000]
-        seeds         = list(range(100, 105))
+        print("=" * 50 + "\n")
+        algorithms     = ['delta', 'beam', 'spars', 'gsrm']
+        environments   = ['random', 'maze', 'indoor']
+        sample_counts  = [100, 200, 300, 500, 800, 1000, 1500, 2000]
+        seeds          = list(range(100, 105))
         num_path_tests = 50
 
     os.makedirs("./pursuer_strategies/PRM/results", exist_ok=True)
-    mode_str    = "FAST" if args.fast else "FULL"
-    time_str    = datetime.now().strftime('%Y%m%d%H%M')
-
-    # ★ CSV 与 LOG 使用相同的时间戳前缀，方便对照
+    mode_str   = "FAST" if args.fast else "FULL"
+    time_str   = datetime.now().strftime('%Y%m%d%H%M')
     output_file = (f"./pursuer_strategies/PRM/results/"
                    f"scalability_evaluation_{mode_str}_{time_str}.csv")
     log_file    = (f"./pursuer_strategies/PRM/results/"
                    f"scalability_evaluation_{mode_str}_{time_str}_failures.log")
 
-    if os.path.exists(output_file): os.remove(output_file)
-    if os.path.exists(log_file):    os.remove(log_file)
+    for f in [output_file, log_file]:
+        if os.path.exists(f):
+            os.remove(f)
 
-    # 在日志头部写入本次运行的基本配置，方便事后溯源
     with open(log_file, 'w', encoding='utf-8') as f:
         f.write("PRM Scalability Test — Failure Log\n")
         f.write(f"Run time   : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -400,7 +338,7 @@ def main():
                     try:
                         m = run_scalability_test(
                             algo, env, ns, seed, num_path_tests,
-                            log_filepath=log_file   # ★ 传入日志路径
+                            log_filepath=log_file
                         )
                         save_scalability_metrics_to_file(m, output_file)
                         ok += 1
@@ -408,17 +346,10 @@ def main():
                         print(f"\n\n🚨 [致命崩溃] {algo} 在 {env} "
                               f"(样本={ns}, 种子={seed}) 运行失败！")
                         traceback.print_exc()
-                        # 致命崩溃也写入日志
-                        log_failure(
-                            log_filepath  = log_file,
-                            failure_type  = 'EXCEPTION',
-                            algorithm     = algo,
-                            environment   = env,
-                            num_samples   = ns,
-                            seed          = seed,
-                            exception_msg = str(e),
-                            exception_tb  = traceback.format_exc(),
-                        )
+                        log_failure(log_file, 'EXCEPTION',
+                                    algo, env, ns, seed,
+                                    exception_msg=str(e),
+                                    exception_tb=traceback.format_exc())
                         print()
 
     print(f"\n\n✅ 评测完成！成功率 {ok}/{total}。")
