@@ -1953,20 +1953,25 @@ class SPARS2(BasePathPlanner):
                     self.edges.append((u, v))
                     seen.add(edge_key)
 
+from scipy.signal import convolve2d
+from scipy.spatial import Delaunay
+import numpy as np
+import time
+import matplotlib.pyplot as plt
+
 class GSRM(BasePathPlanner):
     def __init__(self, grid_width, grid_height, obstacles, 
-                 upscale_factor=6,    # 室内环境建议放大 4 倍
-                 iterations=100,     # 2000 次通常足够
+                 upscale_factor=6,    
+                 iterations=100,     
                  dt=2.0,
-                 # 使用更快的扩散系数，让图案更快成型
-                 # 目前得到的还比较好的结果是 Du=0.32, Dv=0.08，A=0.035, B=0.063
                  Du=0.32, Dv=0.08,      
                  A=0.035, 
                  B=0.063,
                  min_node_dist=0.5,
                  peak_min_distance=8,
                  **kwargs):
-        super().__init__(grid_width, grid_height, obstacles, **kwargs)
+        # 传入一个默认的 connection_radius 以防基类因缺少参数报错
+        super().__init__(grid_width, grid_height, obstacles, connection_radius=2.0, **kwargs)
         
         self.grid_w = int(grid_width)
         self.grid_h = int(grid_height)
@@ -1985,7 +1990,6 @@ class GSRM(BasePathPlanner):
         self.B = B
         self.min_node_dist = min_node_dist
         self.peak_min_distance = peak_min_distance
-        # 拉普拉斯卷积核 (Isotropic Laplacian)
         self.laplacian_kernel = np.array([[0.05, 0.20, 0.05],
                                           [0.20, -1.0, 0.20],
                                           [0.05, 0.20, 0.05]])
@@ -1995,7 +1999,6 @@ class GSRM(BasePathPlanner):
 
     def generate_prm(self):
         start_time = time.time()
-
         self.obstacle_mask = self._create_upscaled_mask()
 
         self.U = np.random.uniform(0.8, 1.0, (self.sim_h, self.sim_w))
@@ -2004,20 +2007,15 @@ class GSRM(BasePathPlanner):
         print("执行仿真中...")
         self._simulate()
 
-        # 5. 调试输出：保存热力图
         self._save_debug_viz("gsrm_debug_check.png")
 
-        # 6. 提取斑点
-        self.nodes = self._extract_nodes(threshold_ratio=0.35)  # 降低阈值
-    
-        # 如果节点仍然太少，使用多阈值策略
+        self.nodes = self._extract_nodes(threshold_ratio=0.35)
         if len(self.nodes) < 20:
             print("Too few nodes, trying lower threshold...")
             self.nodes = self._extract_nodes(threshold_ratio=0.25)
         
         print(f"Final nodes: {len(self.nodes)}")
 
-        # 构建几何
         if len(self.nodes) > 1:
             self._construct_geometry()
 
@@ -2034,7 +2032,6 @@ class GSRM(BasePathPlanner):
         threshold = max_v * threshold_ratio
         neighborhood_size = self.peak_min_distance
         
-        # 局部极大值检测（替代轮廓检测）
         local_max = maximum_filter(self.V, size=neighborhood_size, mode='constant', cval=0.0)
         is_peak = (self.V == local_max) & (self.V > threshold) & (~self.obstacle_mask)
         peak_coords = np.argwhere(is_peak)
@@ -2042,11 +2039,9 @@ class GSRM(BasePathPlanner):
         if len(peak_coords) == 0:
             return []
         
-        # 按亮度排序
         peak_values = self.V[is_peak]
         peak_coords = peak_coords[np.argsort(-peak_values)]
         
-        # 转换坐标
         nodes = []
         for sim_cy, sim_cx in peak_coords:
             grid_x_pri = sim_cx / self.upscale
@@ -2054,10 +2049,10 @@ class GSRM(BasePathPlanner):
             grid_x = grid_x_pri.item()
             grid_y = grid_y_pri.item()
             if self._is_valid_position(grid_x, grid_y):
+                # 【恢复】还原你原本正确的缩放逻辑
                 nodes.append((grid_x * ENV_CONFIG['cell_size'],
-                            grid_y * ENV_CONFIG['cell_size']))
+                              grid_y * ENV_CONFIG['cell_size']))
         
-        # NMS去重（距离过近只保留亮度高的）
         min_dist = self.min_node_dist * ENV_CONFIG['cell_size']
         kept = []
         for node in nodes:
@@ -2080,16 +2075,10 @@ class GSRM(BasePathPlanner):
             U[mask] = 0.0
             V[mask] = 0.0
             
-            # 计算拉普拉斯算子 
-            # mode='same' 保证输出尺寸不变，boundary='fill' 默认边缘补0
             Lu = convolve2d(U, kernel, mode='same', boundary='fill', fillvalue=0)
             Lv = convolve2d(V, kernel, mode='same', boundary='fill', fillvalue=0)
             
-            uvv = U * (V * V) # u*v^2
-            
-            # du/dt = Du*Lu - uv^2 + F*(1-u)
-            # dv/dt = Dv*Lv + uv^2 - (F+k)*v
-            
+            uvv = U * (V * V)
             U += (Du * Lu - uvv + A * (1.0 - U)) * dt
             V += (Dv * Lv + uvv - (A + B) * V) * dt
             
@@ -2098,28 +2087,22 @@ class GSRM(BasePathPlanner):
 
     def _create_upscaled_mask(self):
         mask = np.zeros((self.sim_h, self.sim_w), dtype=bool)
-        
         for (ox, oy) in self.obstacles:
-            # 映射范围
             r_start = int(oy * self.upscale)
             r_end = int((oy + 1) * self.upscale)
             c_start = int(ox * self.upscale)
             c_end = int((ox + 1) * self.upscale)
             
-            # 边界保护
             r_start = max(0, r_start)
             r_end = min(self.sim_h, r_end)
             c_start = max(0, c_start)
             c_end = min(self.sim_w, c_end)
             
             mask[r_start:r_end, c_start:c_end] = True
-            
         return mask
 
     def _construct_geometry(self):
-        # 简单的 Delaunay 连接
         dummy_indices = np.argwhere(self.obstacle_mask)
-        # 采样虚拟点
         if len(dummy_indices) > 0:
             count = min(len(dummy_indices), len(self.nodes)*2)
             choices = np.random.choice(len(dummy_indices), count, replace=False)
@@ -2141,32 +2124,53 @@ class GSRM(BasePathPlanner):
         for simplex in tri.simplices:
             for i in range(3):
                 u, v = simplex[i], simplex[(i+1)%3]
-                # 仅连接真实节点
                 if u < num_real and v < num_real:
                     if u > v: u, v = v, u
                     if (u, v) in seen: continue
                     seen.add((u, v))
                     
-                    if self._check_line_collision(self.nodes[u], self.nodes[v]):
+                    # 【恢复】只使用你原本完美的 _check_line_collision 来建图！
+                    if self._is_valid_edge(self.nodes[u], self.nodes[v]):
                         self.edges.append((self.nodes[u], self.nodes[v]))
 
+    def _is_valid_edge(self, node1, node2, num_samples=None):
+        """检查边是否有效（沿线段高密度采样检测碰撞）"""
+        
+        # 1. 坐标系转换：必须先把像素级坐标缩小回网格坐标！
+        x1 = node1[0] / ENV_CONFIG['cell_size']
+        y1 = node1[1] / ENV_CONFIG['cell_size']
+        x2 = node2[0] / ENV_CONFIG['cell_size']
+        y2 = node2[1] / ENV_CONFIG['cell_size']
+        
+        # 2. 计算在真实网格中的线段长度
+        length = math.hypot(x2 - x1, y2 - y1)
+        
+        # 3. 引入原基类极其严密的高频采样率（每格 20 次检测），取代 GSRM 原本漏洞百出的 dist*2
+        if num_samples is None:
+            num_samples = max(1, int(length * 20))
+        
+        # 4. 高频密集插值检测
+        for i in range(num_samples + 1):
+            t = i / num_samples
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            if not self._is_valid_position(x, y):
+                return False
+        return True
+
     def _check_line_collision(self, start, end):
-        # 注意：输入的坐标是渲染坐标，需要转换为 grid 坐标进行碰撞检测
         x0 = start[0] / ENV_CONFIG['cell_size']
         y0 = start[1] / ENV_CONFIG['cell_size']
         x1 = end[0] / ENV_CONFIG['cell_size']
         y1 = end[1] / ENV_CONFIG['cell_size']
         
-        # 计算距离（grid 坐标单位）
         dist = np.hypot(x1-x0, y1-y0)
-        # 采样密度：每个 grid 单位至少2个采样点
         steps = int(dist * 2) + 1
         
-        for i in range(steps + 1):  # 包含端点
+        for i in range(steps + 1): 
             t = i / steps if steps > 0 else 0
             x = x0 + (x1-x0)*t
             y = y0 + (y1-y0)*t
-            # 使用 grid 坐标检查碰撞
             if not self._is_valid_position(x, y):
                 return False
         return True
@@ -2179,22 +2183,136 @@ class GSRM(BasePathPlanner):
 
     def _save_debug_viz(self, filename):
         plt.figure(figsize=(12, 6))
-        
         plt.subplot(1, 2, 1)
         plt.title("Map & Obstacles (Mask)")
         plt.imshow(self.obstacle_mask, cmap='gray')
-        
         plt.subplot(1, 2, 2)
         plt.title(f"Chemical V (Max={self.V.max():.2f})")
         plt.imshow(self.V, cmap='inferno')
         plt.colorbar()
-        
         plt.savefig(filename)
         plt.close()
-        print(f"Debug image saved: {filename}")
 
+    def generate_valid_point_pairs(self, num_pairs):
+        """生成指定数量的有效起终点对"""
+        pairs = []
+        attempts = 0
+        max_attempts = num_pairs * 10
+        min_distance = 8 * ENV_CONFIG['cell_size']
+        
+        while len(pairs) < num_pairs and attempts < max_attempts:
+            start = self._random_sample()  # 获取的是带有 cell_size 缩放的世界坐标
+            goal = self._random_sample()
+            attempts += 1
+            
+            # 【核心修复】：转换为网格坐标交给碰撞检测器
+            start_grid_x = start[0] / ENV_CONFIG['cell_size']
+            start_grid_y = start[1] / ENV_CONFIG['cell_size']
+            goal_grid_x = goal[0] / ENV_CONFIG['cell_size']
+            goal_grid_y = goal[1] / ENV_CONFIG['cell_size']
+            
+            # 使用转换后的网格坐标进行合法性校验
+            if (self._is_valid_position(start_grid_x, start_grid_y) and 
+                self._is_valid_position(goal_grid_x, goal_grid_y) and 
+                start != goal):
+                
+                # 距离判断依然使用原汁原味的世界坐标
+                if self._distance(start, goal) > min_distance:
+                    pairs.append((start, goal))
 
+        return pairs
 
+    def find_path(self, start, goal):
+        """使用A*算法在路图中查找从start到goal的路径"""     
+        start_time = time.time()   
+
+        # 【修复】：把真实世界坐标转回网格坐标，再交给 _is_valid_position 检查
+        start_grid_x = start[0] / ENV_CONFIG['cell_size']
+        start_grid_y = start[1] / ENV_CONFIG['cell_size']
+        goal_grid_x = goal[0] / ENV_CONFIG['cell_size']
+        goal_grid_y = goal[1] / ENV_CONFIG['cell_size']
+
+        if not self._is_valid_position(start_grid_x, start_grid_y):
+            raise ValueError("Start position is invalid or in collision.")
+        if not self._is_valid_position(goal_grid_x, goal_grid_y):
+            raise ValueError("Goal position is invalid or in collision.")
+
+        if not self.nodes:
+            self.generate_prm()
+        if not self.nodes:
+            raise ValueError("Cannot generate any nodes in the PRM.")
+
+        adjacency = {node: {} for node in self.nodes}
+        for edge in self.edges:
+            u, v = edge
+            dist = self._distance(u, v)
+            adjacency[u][v] = dist
+            adjacency[v][u] = dist
+        
+        adjacency[start] = {}
+        adjacency[goal] = {}
+        start_connected = False
+        goal_connected = False
+        for node in self.nodes:
+            if self._is_valid_edge(start, node):
+                dist = self._distance(start, node)
+                adjacency[start][node] = dist
+                adjacency[node][start] = dist
+                start_connected = True
+            if self._is_valid_edge(goal, node):
+                dist = self._distance(goal, node)
+                adjacency[goal][node] = dist
+                adjacency[node][goal] = dist
+                goal_connected = True
+        
+        if not start_connected or not goal_connected:
+            return None, None, None, time.time() - start_time
+
+        open_set = []
+        open_set.append((self._distance(start, goal), start))
+        open_set_nodes = {start}
+        backtrack = {}
+        g_score = {start: 0}
+        visited = set()
+        while open_set:
+            current_f, current = heapq.heappop(open_set)
+            if current in visited:
+                continue
+            visited.add(current)
+            open_set_nodes.remove(current)
+
+            if current == goal:
+                path_nodes = []
+                tmp_node = goal
+                while tmp_node in backtrack:
+                    path_nodes.append(tmp_node)
+                    tmp_node = backtrack[tmp_node]
+                path_nodes.append(start)
+                path_nodes.reverse()
+                
+                path_nodes = self.backward_prune_path(path_nodes)
+                path_edges = []
+                for i in range(len(path_nodes) - 1):
+                    path_edges.append((path_nodes[i], path_nodes[i + 1]))
+                
+                path_length = sum(self._distance(path_nodes[i], path_nodes[i + 1]) for i in range(len(path_nodes) - 1))
+
+                return path_nodes, path_edges, path_length, time.time() - start_time
+
+            else:
+                for neighbor, dist in adjacency[current].items():
+                    if neighbor in visited:
+                        continue
+                    tentative_g = g_score[current] + dist
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        f_score = tentative_g + self._distance(neighbor, goal)
+                        backtrack[neighbor] = current
+                        if neighbor not in open_set_nodes:
+                            heapq.heappush(open_set, (f_score, neighbor))
+                            open_set_nodes.add(neighbor)
+
+        return None, None, None, time.time() - start_time
 
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    
@@ -2378,47 +2496,51 @@ if __name__ == "__main__":
                 obstacles.append((x, y))  
         num_nodes = 320  
         connection_radius = 0.6  
+
     import time
     start_time = time.time()
 
-    generator_name = "spars" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
+    # 将默认测试算法改为 gsrm
+    generator_name = "gsrm" # "delta" / "star" / "beam" / "spars"/ "gsrm" / "odrm"
 
+    # 初始化特定于骨架图的变量，防止非 beam 算法在后续渲染时抛出未定义异常
+    medial_axis_nodes = set()
+    medial_axis_edges = set()
+    medial_axis_paths = []
+
+    # 统一使用 generator 作为实例变量名
     if generator_name == "delta":
-        prm_generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
-        (nodes, edges) = prm_generator.generate_prm()
+        generator = DeltaPRM(grid_width, grid_height, obstacles, num_nodes=2000, delta_radius=0.15, connection_radius=1.6,max_failures=100)
+        (nodes, edges) = generator.generate_prm()
 
     elif generator_name == "star":
-        prm_generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=1)
-        (nodes, edges) = prm_generator.generate_prm()
+        generator = PRMStar(grid_width, grid_height, obstacles, num_nodes=400, connection_radius=1)
+        (nodes, edges) = generator.generate_prm()
 
     elif generator_name == "beam":
-        #maze:550,1.5,25,0.2,0.4
-        #indoor:380,2,25(30),0.2,0.4
-        #random:700,1.2,3,0.08,0.3
-        # 可按需传入 beam_angle_step_deg / beam_ray_step 覆盖默认:
         if ENVIRONMENT_TYPE == "random":
-            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
+            generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.2,
                                     beam_angle_step_deg=3,
                                     beam_ray_step=0.08,
                                     min_connection_radius=0.3)
         elif ENVIRONMENT_TYPE == "maze":
-            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
+            generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.5,
                                     beam_angle_step_deg=25,
                                     beam_ray_step=0.2,
                                     min_connection_radius=0.4)
         elif ENVIRONMENT_TYPE == "indoor":
-            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
+            generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=400,
                                     connection_radius=2,
                                     beam_angle_step_deg=25,
                                     beam_ray_step=0.2,
                                     min_connection_radius=0.4)
         else:
-            prm_generator = BeamPRM(grid_width, grid_height, obstacles,
+            generator = BeamPRM(grid_width, grid_height, obstacles,
                                     num_nodes=1000,
                                     connection_radius=1.5,
                                     beam_angle_step_deg=10,
@@ -2430,35 +2552,51 @@ if __name__ == "__main__":
         medial_axis_nodes,
         medial_axis_all_nodes,
         medial_axis_edges,
-        medial_axis_paths) = prm_generator.generate_prm()
+        medial_axis_paths) = generator.generate_prm()
 
     elif generator_name == "spars":
         generator = SPARS2(grid_width, grid_height, obstacles, num_nodes=3000, max_failures=200, delta=0.2, visibility_radius=1.6, connection_radius=1.2)
         (nodes, edges) = generator.generate_prm()
+        
     elif generator_name == "gsrm":
         generator = GSRM(grid_width, grid_height, obstacles,iterations=1000)
         (nodes, edges) = generator.generate_prm()
+
     end_time = time.time()
     print(f"PRM 生成耗时: {end_time - start_time:.2f} 秒")
     print(len(nodes), "nodes generated")
     print(len(edges), "edges generated")
-    print(nodes)
-    print(edges)
+
+    # 1. 新增：用一个列表收集所有规划成功的路径
+    found_paths = []
+    
     point_pairs = generator.generate_valid_point_pairs(num_pairs=5)
     for start, goal in point_pairs:
         print(f"Valid pair: Start {start} -> Goal {goal}")
         path_nodes, path_edges, path_length, search_time = generator.find_path(start, goal)
-        print(f"  Path length: {path_length:.2f}, Search time: {search_time:.2f}s, Nodes in path: {len(path_nodes)}, Edges in path: {len(path_edges)}")
-        print(f"  Path nodes: {path_nodes}")
-        print(f"  Path edges: {path_edges}")
-    # print(nodes, edges)
-    # print(len(medial_axis_nodes), "selected medial axis nodes")
-    # print(len(medial_axis_all_nodes), "all medial axis nodes (including edge endpoints)")
-    # print(len(medial_axis_edges), "medial axis edges")
-    # print(len(medial_axis_paths), "medial axis paths")
-    renderer = PRMRenderer(grid_width, grid_height)
-    # 仍可用原集合渲染(不需要 all_nodes 渲染则保持不变)
-    #renderer.run(nodes, edges, obstacles, medial_axis_nodes, medial_axis_edges, medial_axis_paths)
-    renderer.save_image(nodes, edges, obstacles, env=ENVIRONMENT_TYPE, algorithm=generator_name, filepath=f"prm_result_{generator_name}.pdf")
-    # !!! 远端服务器上不能用renderer.run()，只能保存图片后查看 !!!因为无法唤起窗口，进程会一直等待窗口唤醒导致死锁
+        
+        if path_nodes and len(path_nodes) > 1:
+            found_paths.append(path_nodes) # 记录成功找到的路径
+            print(f"  Path length: {path_length:.2f}, Search time: {search_time:.2f}s, Nodes in path: {len(path_nodes)}, Edges in path: {len(path_edges)}")
+            # print(f"  Path nodes: {path_nodes}")
+            # print(f"  Path edges: {path_edges}")
+        else:
+            print("  Path search failed (no valid path found).")
 
+    # 2. 合并：把搜索到的路径传给渲染参数进行加粗高亮渲染
+    all_paths_to_draw = medial_axis_paths + found_paths
+
+    # 3. 渲染：强制开启 headless=True，防止服务器挂机死锁
+    renderer = PRMRenderer(grid_width, grid_height, headless=True)
+    
+    renderer.save_image(
+        nodes, 
+        edges, 
+        obstacles, 
+        medial_axis_nodes=medial_axis_nodes, 
+        medial_axis_edges=medial_axis_edges, 
+        medial_axis_paths=all_paths_to_draw, # 传入所有需要高亮的粗线路径
+        env=ENVIRONMENT_TYPE, 
+        algorithm=generator_name, 
+        filepath=f"prm_result_{generator_name}_{ENVIRONMENT_TYPE}.pdf"
+    )

@@ -30,7 +30,7 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
     algorithm_mapping = {
         'beam': 'BS-PRM',
         'delta': '  -PRM', 
-        'spars': 'SPARS'
+        'spars': 'SPARS2'
     }
     
     # 环境名称映射

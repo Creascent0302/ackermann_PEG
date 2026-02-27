@@ -1,7 +1,7 @@
 """
 可扩展性分析脚本 - 绘制 6x4 综合对比 SVG 大图
-展示算法随采样次数变化的性能 (支持均值和标准差可视化)
-(仅保留 4 种核心算法: delta, beam, spars, gsrm)
+布局：按环境分组堆叠 (共3个环境，每个环境占2行4列，展示8个核心指标)
+(剔除 path_nodes_count，保留 4 种核心算法: delta, beam, spars, gsrm)
 """
 
 import pandas as pd
@@ -14,7 +14,7 @@ import os
 # ─────────────────────────────────────────────
 # 1. 基础配置
 # ─────────────────────────────────────────────
-# ⚠️ 注意: 运行此脚本前，请将此路径修改为你实际跑完的 CSV 文件名
+# ⚠️ 注意: 运行此脚本前，请确保这里的 CSV 文件名和你刚跑完的一致
 DATA_FILE = './pursuer_strategies/PRM/results/scalability_evaluation_202602230628.csv' 
 data = pd.read_csv(DATA_FILE)
 
@@ -25,46 +25,38 @@ colors = {
     'spars': '#2ca02c',   # 绿色
     'gsrm':  '#d62728',   # 红色
 }
-
-linestyles = {
-    'delta': '-',
-    'beam':  '-',
-    'spars': '--',
-    'gsrm':  '-.',
-}
-
-markers = {
-    'delta': 'o',
-    'beam':  's',
-    'spars': '^',
-    'gsrm':  'D',
-}
-
+linestyles = {'delta': '-', 'beam': '-', 'spars': '--', 'gsrm': '-.'}
+markers    = {'delta': 'o', 'beam': 's', 'spars': '^', 'gsrm': 'D'}
 algorithms = ['delta', 'beam', 'spars', 'gsrm']
 
 # 全局图形样式
 plt.rcParams['font.family']      = 'Times New Roman'
 plt.rcParams['font.size']        = 13
-plt.rcParams['axes.labelsize']   = 15
-plt.rcParams['axes.titlesize']   = 16
-plt.rcParams['xtick.labelsize']  = 13
-plt.rcParams['ytick.labelsize']  = 13
-plt.rcParams['legend.fontsize']  = 14
+plt.rcParams['axes.labelsize']   = 14
+plt.rcParams['axes.titlesize']   = 15
+plt.rcParams['xtick.labelsize']  = 12
+plt.rcParams['ytick.labelsize']  = 12
+plt.rcParams['legend.fontsize']  = 16
 
 charts_dir = './pursuer_strategies/PRM/results/charts'
 os.makedirs(charts_dir, exist_ok=True)
 
-# 图表列布局: Random, Maze, Indoor, All(Combined)
-environments = ['random', 'maze', 'indoor', 'all'] 
+environments = ['random', 'maze', 'indoor']
+env_display_names = {'random': 'Random Environment', 'maze': 'Maze Environment', 'indoor': 'Indoor Environment'}
 
-# 精选 6 个最具有代表性的核心指标作为行
+# 精选 8 个核心指标 (每个环境 2行 x 4列)
+# (已按要求删去 path_nodes_count，如果想替换其它指标可以直接在这里改 column 的名字)
 selected_metrics_config = [
-    {'column': 'path_success', 'title': 'Path Success Rate (%)', 'is_rate': True},
-    {'column': 'generation_time', 'title': 'Generation Time (s)', 'filter_success': False},
-    {'column': 'path_length', 'title': 'Average Path Length', 'filter_success': True},
-    {'column': 'search_time', 'title': 'Path Search Time (s)', 'filter_success': True},
-    {'column': 'dispersion', 'title': 'Coverage Dispersion', 'filter_success': False},
-    {'column': 'clearance', 'title': 'Path Clearance (Safety)', 'filter_success': True},
+    # 第一行指标
+    {'column': 'path_success',       'title': 'Path Success Rate (%)',   'is_rate': True},
+    {'column': 'generation_time',    'title': 'Generation Time (s)',     'filter_success': False},
+    {'column': 'actual_nodes_count', 'title': 'Actual Nodes Count',      'filter_success': False},
+    {'column': 'edges_count',        'title': 'Graph Edges Count',       'filter_success': False},
+    # 第二行指标
+    {'column': 'path_length',        'title': 'Average Path Length',     'filter_success': True},
+    {'column': 'search_time',        'title': 'Path Search Time (s)',    'filter_success': True},
+    {'column': 'dispersion',         'title': 'Coverage Dispersion',     'filter_success': False},
+    {'column': 'clearance',          'title': 'Path Clearance (Safety)', 'filter_success': True},
 ]
 
 # ─────────────────────────────────────────────
@@ -78,7 +70,6 @@ def plot_metric_on_ax(ax, algo_data, algo, metric_config):
     
     if len(algo_data) == 0: return False
 
-    # 按采样次数计算均值和标准差
     grouped = algo_data.groupby('num_samples')[metric_col].agg(['mean', 'std']).reset_index()
     grouped['std'] = grouped['std'].fillna(0)
 
@@ -89,8 +80,6 @@ def plot_metric_on_ax(ax, algo_data, algo, metric_config):
 
     if metric_config.get('is_rate', False):
         y_lower, y_upper = np.clip(y - std, 0, 100), np.clip(y + std, 0, 100)
-    elif metric_config.get('is_ratio', False):
-        y_lower, y_upper = np.clip(y - std, 0, 1), np.clip(y + std, 0, 1)
     else:
         y_lower, y_upper = np.maximum(y - std, 0), y + std
 
@@ -100,61 +89,57 @@ def plot_metric_on_ax(ax, algo_data, algo, metric_config):
 # ─────────────────────────────────────────────
 # 3. 绘制 6x4 终极大图 (保存为 SVG)
 # ─────────────────────────────────────────────
-print("\n🚀 开始生成 6x4 综合对比 SVG 大图...")
+print("\n🚀 开始生成 6x4 (按环境堆叠) 综合对比 SVG 大图...")
 
 # 创建 6 行 4 列的图布
-fig, axes = plt.subplots(nrows=6, ncols=4, figsize=(24, 28))
-fig.suptitle('Comprehensive Scalability Across Environments (6 Metrics x 4 Contexts)', 
-             fontsize=26, fontweight='bold', y=0.995)
+fig, axes = plt.subplots(nrows=6, ncols=4, figsize=(24, 30))
+fig.suptitle('Comprehensive Scalability Analysis Across Different Environments', 
+             fontsize=28, fontweight='bold', y=0.995)
 
-env_display_names = ['Random Env', 'Maze Env', 'Indoor Env', 'All Envs Combined']
+# 遍历每个环境 (每个环境占 2 行)
+for env_idx, env_name in enumerate(environments):
+    env_data = data[data['environment'] == env_name].copy()
+    row_offset = env_idx * 2  # 当前环境的起始行号 (0, 2, 4)
 
-for row_idx, metric_config in enumerate(selected_metrics_config):
-    for col_idx, env_name in enumerate(environments):
-        ax = axes[row_idx, col_idx]
-        
-        # 数据过滤 (All 表示不区分布局取总体平均)
-        if env_name == 'all':
-            env_data = data.copy()
-        else:
-            env_data = data[data['environment'] == env_name].copy()
+    # 遍历 8 个指标
+    for m_idx, metric_config in enumerate(selected_metrics_config):
+        r = row_offset + (m_idx // 4)  # 计算在 6 行中的绝对行号
+        c = m_idx % 4                  # 计算所在的列号
+        ax = axes[r, c]
 
-        # 遍历算法绘制
+        # 遍历所有算法绘图
+        has_data = False
         for algo in algorithms:
             algo_slice = env_data[env_data['algorithm'] == algo]
-            plot_metric_on_ax(ax, algo_slice, algo, metric_config)
+            if plot_metric_on_ax(ax, algo_slice, algo, metric_config):
+                has_data = True
 
-        # 样式设置
         ax.grid(True, alpha=0.3, linestyle='--')
         if metric_config.get('is_rate', False): ax.set_ylim(0, 105)
         else: ax.set_ylim(bottom=0)
 
-        # 仅在第一行设置列标题 (环境名称)
-        if row_idx == 0: 
-            ax.set_title(env_display_names[col_idx], fontsize=18, fontweight='bold', pad=15)
-        
-        # 仅在第一列设置 Y 轴标签 (指标名称)
-        if col_idx == 0: 
-            ax.set_ylabel(metric_config['title'], fontweight='bold')
-        else:
-            ax.set_ylabel("")
+        # 核心修改：明确标出环境与指标名称
+        ax.set_title(f"[{env_display_names[env_name]}]\n{metric_config['title']}", 
+                     fontsize=15, fontweight='bold', pad=10)
+        ax.set_ylabel(metric_config['title'], fontsize=14)
 
-        # 仅在最后一行设置 X 轴标签
-        if row_idx == 5: 
-            ax.set_xlabel('Sample Budget', fontweight='bold')
+        # 仅在最后一行 (第6行) 添加横轴标签
+        if r == 5:
+            ax.set_xlabel('Sample Budget (Nodes)', fontweight='bold', fontsize=14)
         else:
             ax.set_xlabel("")
 
-        # 图例：为了干净，仅在第一行的最后一列（All Envs 右上角）显示一次图例
-        if row_idx == 0 and col_idx == 3:
-            ax.legend(loc='lower left', bbox_to_anchor=(1.02, 0), frameon=True, shadow=True)
-        elif ax.get_legend():
-            ax.get_legend().remove()
+# 提取图例，放置在整张图的最上方中心位置
+handles, labels = axes[0, 0].get_legend_handles_labels()
+if handles:
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.975), 
+               ncol=4, frameon=True, shadow=True, fontsize=18)
 
-plt.tight_layout(rect=[0, 0, 0.92, 0.98])  # 留出右侧空间给图例
+# 调整子图间距，为顶部的主标题和图例留出充足空间
+plt.tight_layout(rect=[0, 0, 1, 0.95], h_pad=2.0, w_pad=2.0)
 
 # 保存为高质量 SVG
-out_path = os.path.join(charts_dir, 'scalability_ALL_6x4.svg')
+out_path = os.path.join(charts_dir, 'scalability_Envs_6x4.svg')
 plt.savefig(out_path, format='svg', bbox_inches='tight', dpi=300)
-print(f"✅ 成功保存 6x4 大图至: {os.path.abspath(out_path)}")
+print(f"✅ 成功保存 6x4 环境分组大图至: {os.path.abspath(out_path)}")
 plt.close()
