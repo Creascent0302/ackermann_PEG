@@ -1,17 +1,15 @@
 import fitz  # PyMuPDF
 import os
-from PIL import Image, ImageDraw, ImageFont
-import io
 
-def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
+def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=4):
     """
-    使用PyMuPDF直接合并PDF到网格布局
+    使用PyMuPDF直接合并PDF到网格布局，标题放置在下方并导出为SVG
     """
-    # 创建新的PDF文档
+    # 创建新的PDF文档作为中转
     output_doc = fitz.open()
     
-    # 计算页面大小 (使用更大的页面)
-    page_width = 2000  # A4宽度的3倍
+    # 计算页面大小 (4列所以相应加宽，保持比例协调)
+    page_width = 2666  # A4宽度的4倍左右
     page_height = 2000  # A4高度的3倍
     
     # 创建一个新页面
@@ -21,16 +19,17 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
     cell_width = page_width / grid_cols
     cell_height = page_height / grid_rows
     
-    # 大幅减少左右边距，保持上下边距
-    margin_x = 50 # 左右边距
-    margin_y = 10  # 上下边距
-    title_height = 50
+    # 调整边距：图片尽量撑满，把空间留给底部的标题
+    margin_x = 30  # 左右边距
+    margin_top = 20  # 顶部边距(减小)
+    margin_bottom = 70  # 底部留给标题的空间
     
-    # 算法名称映射
+    # 算法名称映射 (增加 GSRM)
     algorithm_mapping = {
         'beam': 'BS-PRM',
         'delta': '  -PRM', 
-        'spars': 'SPARS2'
+        'spars': 'SPARS2',
+        'gsrm': 'GSRM'
     }
     
     # 环境名称映射
@@ -49,7 +48,7 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
         row = i // grid_cols
         col = i % grid_cols
         
-        # 计算单元格位置
+        # 计算单元格基准位置
         x_start = col * cell_width
         y_start = row * cell_height
         
@@ -57,72 +56,67 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
         filename = os.path.basename(pdf_file)
         parts = filename.replace('.pdf', '').split('_')
         
+        # 【核心修改区】：矩阵式下标 (a1)...(c4)
+        row_char = chr(97 + row)  # 97是'a'的ASCII码，0->a, 1->b, 2->c
+        col_num = col + 1         # 0->1, 1->2, 2->3, 3->4
+        label = f"{row_char}{col_num}"  # 组合成 a1, b2 等
+        
         if len(parts) >= 2:
             algorithm = parts[0].lower()
             environment = parts[1].lower()
             
-            # 使用映射获取显示名称
             alg_display = algorithm_mapping.get(algorithm, algorithm.upper())
             env_display = environment_mapping.get(environment, environment.capitalize())
-            title = f"{alg_display} {env_display}"
+            
+            title = f"({label}) {alg_display} {env_display}"
         else:
-            title = filename.replace('.pdf', '').upper()
+            title = f"({label}) {filename.replace('.pdf', '').upper()}"
         
         try:
-            # 打开PDF文件
+            # 打开源PDF文件
             doc = fitz.open(pdf_file)
-            src_page = doc.load_page(0)  # 取第一页
+            src_page = doc.load_page(0)
             
             # 计算源页面的尺寸
             src_rect = src_page.rect
             
-            # 计算目标矩形（大幅减少左右边距）
+            # 计算目标图片的最大可用矩形区域（留出底部标题空间）
             target_width = cell_width - 2 * margin_x
-            target_height = cell_height - 2 * margin_y - title_height
+            target_height = cell_height - margin_top - margin_bottom
             
-            # 计算缩放比例
+            # 计算缩放比例，保持原有宽高比
             scale_x = target_width / src_rect.width
             scale_y = target_height / src_rect.height
             scale = min(scale_x, scale_y)
             
-            # 计算实际大小和位置
             scaled_width = src_rect.width * scale
             scaled_height = src_rect.height * scale
             
-            # 居中位置（左右居中，图片占用更多空间）
+            # 居中放置图片 (水平居中，垂直靠上)
             img_x = x_start + margin_x + (target_width - scaled_width) / 2
-            img_y = y_start + margin_y + title_height
+            img_y = y_start + margin_top
             
-            # 创建目标矩形
-            target_rect = fitz.Rect(img_x, img_y, 
-                                   img_x + scaled_width, 
-                                   img_y + scaled_height)
-            
-            # 将源页面插入到目标页面
+            # 创建目标矩形并插入PDF页面
+            target_rect = fitz.Rect(img_x, img_y, img_x + scaled_width, img_y + scaled_height)
             page.show_pdf_page(target_rect, doc, 0)
             
-            # 计算标题的居中位置（与整个单元格中心对齐）
+            # --- 绘制底部标题 ---
+            # X轴与当前单元格居中对齐
             title_x = x_start + cell_width / 2
-            title_y = y_start + margin_y + 25
+            # Y轴放置在图片的正下方 (加上一点间隙)
+            title_y = img_y + scaled_height + 40 
             
-            # 获取文本尺寸以确保居中
-            # 使用textlength方法获取文本宽度
-            text_width = fitz.get_text_length(title, fontname="tibo", fontsize=30)
+            # 获取文本宽度以确保严格居中
+            text_width = fitz.get_text_length(title, fontname="tibo", fontsize=32)
             title_x_centered = title_x - text_width / 2
             
             title_point = fitz.Point(title_x_centered, title_y)
             
-            # 只插入一次标题文本
+            # 插入带序号的标题
             page.insert_text(title_point, title, 
-                           fontsize=30, 
+                           fontsize=32, 
                            fontname="tibo",
                            color=(0, 0, 0))
-            
-            # 绘制单元格边框（可选）
-            # border_rect = fitz.Rect(x_start, y_start, 
-            #                        x_start + cell_width, 
-            #                        y_start + cell_height)
-            # page.draw_rect(border_rect, color=(0.8, 0.8, 0.8), width=0.5)
             
             doc.close()
             
@@ -130,33 +124,45 @@ def merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3):
             print(f"处理文件 {pdf_file} 时出错: {e}")
             continue
     
-    # 保存输出文档
-    output_doc.save(output_path)
+    # 提取整页的 SVG 矢量内容并写入文件
+    print("正在生成高清 SVG 矢量图...")
+    svg_content = page.get_svg_image(matrix=fitz.Identity)
+    
+    with open(output_path, "w", encoding="utf-8") as svg_file:
+        svg_file.write(svg_content)
+        
     output_doc.close()
-    print(f"网格PDF已保存到: {output_path}")
+    print(f"✅ 大图合成成功，已保存至: {output_path}")
 
 def main():
-    # 您的PDF文件列表
+    # PDF文件列表 (3行4列 = 12个文件)
     pdf_files = [
+        # 第一行：Cluttered (a1-a4)
         "pursuer_strategies/PRM/results/random/beam_random_520.pdf",
         "pursuer_strategies/PRM/results/random/delta_random_520.pdf", 
         "pursuer_strategies/PRM/results/random/spars_random_520.pdf",
+        "pursuer_strategies/PRM/results/random/gsrm_random.pdf",      
+        
+        # 第二行：Maze (b1-b4)
         "pursuer_strategies/PRM/results/maze/beam_maze_114.pdf",
         "pursuer_strategies/PRM/results/maze/delta_maze_114.pdf",
         "pursuer_strategies/PRM/results/maze/spars_maze_114.pdf",
+        "pursuer_strategies/PRM/results/maze/gsrm_maze.pdf",          
+        
+        # 第三行：Indoor (c1-c4)
         "pursuer_strategies/PRM/results/indoor/beam_indoor.pdf",
         "pursuer_strategies/PRM/results/indoor/delta_indoor.pdf",
-        "pursuer_strategies/PRM/results/indoor/spars_indoor.pdf"
+        "pursuer_strategies/PRM/results/indoor/spars_indoor.pdf",
+        "pursuer_strategies/PRM/results/indoor/gsrm_indoor.pdf"       
     ]
     
-    # 输出文件路径
-    output_path = "pursuer_strategies/PRM/results/charts/grid_analysis_3x3.pdf"
+    output_path = "pursuer_strategies/PRM/results/charts/grid_analysis_3x4.svg"
     
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    # 合并为3x3网格
-    merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=3)
+    # 合并为3x4网格
+    merge_pdfs_to_grid_simple(pdf_files, output_path, grid_rows=3, grid_cols=4)
 
 if __name__ == "__main__":
     main()

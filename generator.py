@@ -1970,7 +1970,6 @@ class GSRM(BasePathPlanner):
                  min_node_dist=0.5,
                  peak_min_distance=8,
                  **kwargs):
-        # 传入一个默认的 connection_radius 以防基类因缺少参数报错
         super().__init__(grid_width, grid_height, obstacles, connection_radius=2.0, **kwargs)
         
         self.grid_w = int(grid_width)
@@ -1993,7 +1992,6 @@ class GSRM(BasePathPlanner):
         self.laplacian_kernel = np.array([[0.05, 0.20, 0.05],
                                           [0.20, -1.0, 0.20],
                                           [0.05, 0.20, 0.05]])
-        
         self.nodes = []
         self.edges = []
 
@@ -2049,7 +2047,6 @@ class GSRM(BasePathPlanner):
             grid_x = grid_x_pri.item()
             grid_y = grid_y_pri.item()
             if self._is_valid_position(grid_x, grid_y):
-                # 【恢复】还原你原本正确的缩放逻辑
                 nodes.append((grid_x * ENV_CONFIG['cell_size'],
                               grid_y * ENV_CONFIG['cell_size']))
         
@@ -2129,27 +2126,20 @@ class GSRM(BasePathPlanner):
                     if (u, v) in seen: continue
                     seen.add((u, v))
                     
-                    # 【恢复】只使用你原本完美的 _check_line_collision 来建图！
                     if self._is_valid_edge(self.nodes[u], self.nodes[v]):
                         self.edges.append((self.nodes[u], self.nodes[v]))
 
     def _is_valid_edge(self, node1, node2, num_samples=None):
-        """检查边是否有效（沿线段高密度采样检测碰撞）"""
-        
-        # 1. 坐标系转换：必须先把像素级坐标缩小回网格坐标！
         x1 = node1[0] / ENV_CONFIG['cell_size']
         y1 = node1[1] / ENV_CONFIG['cell_size']
         x2 = node2[0] / ENV_CONFIG['cell_size']
         y2 = node2[1] / ENV_CONFIG['cell_size']
         
-        # 2. 计算在真实网格中的线段长度
         length = math.hypot(x2 - x1, y2 - y1)
         
-        # 3. 引入原基类极其严密的高频采样率（每格 20 次检测），取代 GSRM 原本漏洞百出的 dist*2
         if num_samples is None:
             num_samples = max(1, int(length * 20))
         
-        # 4. 高频密集插值检测
         for i in range(num_samples + 1):
             t = i / num_samples
             x = x1 + t * (x2 - x1)
@@ -2158,29 +2148,12 @@ class GSRM(BasePathPlanner):
                 return False
         return True
 
-    def _check_line_collision(self, start, end):
-        x0 = start[0] / ENV_CONFIG['cell_size']
-        y0 = start[1] / ENV_CONFIG['cell_size']
-        x1 = end[0] / ENV_CONFIG['cell_size']
-        y1 = end[1] / ENV_CONFIG['cell_size']
-        
-        dist = np.hypot(x1-x0, y1-y0)
-        steps = int(dist * 2) + 1
-        
-        for i in range(steps + 1): 
-            t = i / steps if steps > 0 else 0
-            x = x0 + (x1-x0)*t
-            y = y0 + (y1-y0)*t
-            if not self._is_valid_position(x, y):
-                return False
-        return True
-    
     def _is_valid_position(self, x, y):
-        ix, iy = int(round(x)), int(round(y))
+        ix = int(x)
+        iy = int(y)
         if (ix, iy) in self.obstacles: return False
         if ix < 0 or ix >= self.grid_w or iy < 0 or iy >= self.grid_h: return False
         return True
-
     def _save_debug_viz(self, filename):
         plt.figure(figsize=(12, 6))
         plt.subplot(1, 2, 1)
@@ -2193,30 +2166,32 @@ class GSRM(BasePathPlanner):
         plt.savefig(filename)
         plt.close()
 
+    # ★ 修复点①：加 None 守卫；修复点②：max_attempts 从 *10 改为 *100
     def generate_valid_point_pairs(self, num_pairs):
-        """生成指定数量的有效起终点对"""
+        """生成指定数量的有效起终点对，返回世界坐标"""
         pairs = []
         attempts = 0
-        max_attempts = num_pairs * 10
+        max_attempts = num_pairs * 100          # ← ★ 修复②：原来 *10 在稀疏场景极易不够
         min_distance = 8 * ENV_CONFIG['cell_size']
         
         while len(pairs) < num_pairs and attempts < max_attempts:
-            start = self._random_sample()  # 获取的是带有 cell_size 缩放的世界坐标
-            goal = self._random_sample()
+            start = self._random_sample()
+            goal  = self._random_sample()
             attempts += 1
             
-            # 【核心修复】：转换为网格坐标交给碰撞检测器
+            # ← ★ 修复①：_random_sample 无合法点时返回 None，必须跳过
+            if start is None or goal is None:
+                continue
+            
             start_grid_x = start[0] / ENV_CONFIG['cell_size']
             start_grid_y = start[1] / ENV_CONFIG['cell_size']
-            goal_grid_x = goal[0] / ENV_CONFIG['cell_size']
-            goal_grid_y = goal[1] / ENV_CONFIG['cell_size']
+            goal_grid_x  = goal[0]  / ENV_CONFIG['cell_size']
+            goal_grid_y  = goal[1]  / ENV_CONFIG['cell_size']
             
-            # 使用转换后的网格坐标进行合法性校验
             if (self._is_valid_position(start_grid_x, start_grid_y) and 
-                self._is_valid_position(goal_grid_x, goal_grid_y) and 
-                start != goal):
+                    self._is_valid_position(goal_grid_x, goal_grid_y) and 
+                    start != goal):
                 
-                # 距离判断依然使用原汁原味的世界坐标
                 if self._distance(start, goal) > min_distance:
                     pairs.append((start, goal))
 
@@ -2226,16 +2201,15 @@ class GSRM(BasePathPlanner):
         """使用A*算法在路图中查找从start到goal的路径"""     
         start_time = time.time()   
 
-        # 【修复】：把真实世界坐标转回网格坐标，再交给 _is_valid_position 检查
         start_grid_x = start[0] / ENV_CONFIG['cell_size']
         start_grid_y = start[1] / ENV_CONFIG['cell_size']
-        goal_grid_x = goal[0] / ENV_CONFIG['cell_size']
-        goal_grid_y = goal[1] / ENV_CONFIG['cell_size']
+        goal_grid_x  = goal[0]  / ENV_CONFIG['cell_size']
+        goal_grid_y  = goal[1]  / ENV_CONFIG['cell_size']
 
         if not self._is_valid_position(start_grid_x, start_grid_y):
-            raise ValueError("Start position is invalid or in collision.")
+            raise ValueError(f"Start position is invalid or in collision.")
         if not self._is_valid_position(goal_grid_x, goal_grid_y):
-            raise ValueError("Goal position is invalid or in collision.")
+            raise ValueError(f"Goal position is invalid or in collision.")
 
         if not self.nodes:
             self.generate_prm()
@@ -2250,9 +2224,9 @@ class GSRM(BasePathPlanner):
             adjacency[v][u] = dist
         
         adjacency[start] = {}
-        adjacency[goal] = {}
-        start_connected = False
-        goal_connected = False
+        adjacency[goal]  = {}
+        start_connected  = False
+        goal_connected   = False
         for node in self.nodes:
             if self._is_valid_edge(start, node):
                 dist = self._distance(start, node)
@@ -2261,25 +2235,25 @@ class GSRM(BasePathPlanner):
                 start_connected = True
             if self._is_valid_edge(goal, node):
                 dist = self._distance(goal, node)
-                adjacency[goal][node] = dist
-                adjacency[node][goal] = dist
+                adjacency[goal][node]  = dist
+                adjacency[node][goal]  = dist
                 goal_connected = True
         
         if not start_connected or not goal_connected:
             return None, None, None, time.time() - start_time
 
-        open_set = []
-        open_set.append((self._distance(start, goal), start))
+        open_set       = [(self._distance(start, goal), start)]
         open_set_nodes = {start}
-        backtrack = {}
-        g_score = {start: 0}
-        visited = set()
+        backtrack      = {}
+        g_score        = {start: 0}
+        visited        = set()
+
         while open_set:
             current_f, current = heapq.heappop(open_set)
             if current in visited:
                 continue
             visited.add(current)
-            open_set_nodes.remove(current)
+            open_set_nodes.discard(current)
 
             if current == goal:
                 path_nodes = []
@@ -2290,30 +2264,44 @@ class GSRM(BasePathPlanner):
                 path_nodes.append(start)
                 path_nodes.reverse()
                 
-                path_nodes = self.backward_prune_path(path_nodes)
-                path_edges = []
-                for i in range(len(path_nodes) - 1):
-                    path_edges.append((path_nodes[i], path_nodes[i + 1]))
-                
-                path_length = sum(self._distance(path_nodes[i], path_nodes[i + 1]) for i in range(len(path_nodes) - 1))
-
+                path_nodes  = self.backward_prune_path(path_nodes)
+                path_edges  = [(path_nodes[i], path_nodes[i+1]) for i in range(len(path_nodes)-1)]
+                path_length = sum(self._distance(path_nodes[i], path_nodes[i+1]) for i in range(len(path_nodes)-1))
                 return path_nodes, path_edges, path_length, time.time() - start_time
 
-            else:
-                for neighbor, dist in adjacency[current].items():
-                    if neighbor in visited:
-                        continue
-                    tentative_g = g_score[current] + dist
-                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
-                        g_score[neighbor] = tentative_g
-                        f_score = tentative_g + self._distance(neighbor, goal)
-                        backtrack[neighbor] = current
-                        if neighbor not in open_set_nodes:
-                            heapq.heappush(open_set, (f_score, neighbor))
-                            open_set_nodes.add(neighbor)
+            for neighbor, dist in adjacency[current].items():
+                if neighbor in visited:
+                    continue
+                tentative_g = g_score[current] + dist
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    g_score[neighbor] = tentative_g
+                    f_score = tentative_g + self._distance(neighbor, goal)
+                    backtrack[neighbor] = current
+                    if neighbor not in open_set_nodes:
+                        heapq.heappush(open_set, (f_score, neighbor))
+                        open_set_nodes.add(neighbor)
 
         return None, None, None, time.time() - start_time
-
+    
+    def backward_prune_path(self, path_nodes):
+        if not path_nodes or len(path_nodes) < 3:
+            return path_nodes
+            
+        pruned_path = [path_nodes[0]]
+        current_idx = 0
+        
+        while current_idx < len(path_nodes) - 1:
+            furthest_idx = current_idx + 1
+            for i in range(len(path_nodes) - 1, current_idx, -1):
+                if self._is_valid_edge(path_nodes[current_idx], path_nodes[i]):
+                    furthest_idx = i
+                    break
+            
+            pruned_path.append(path_nodes[furthest_idx])
+            current_idx = furthest_idx
+            
+        return pruned_path  
+    
 def save_pdf_image(screen, filepath):
     """将pygame screen保存为PDF文件"""    
     # 使用PIL将PNG转换为PDF
@@ -2461,6 +2449,7 @@ if __name__ == "__main__":
 
     if ENVIRONMENT_TYPE == "maze":  
         # 迷宫环境特定配置  
+        random.seed(114)
         ENV_CONFIG['gridnum_width'] = 49
         ENV_CONFIG['gridnum_height'] = 49
         grid_width = ENV_CONFIG['gridnum_width']  
@@ -2481,6 +2470,7 @@ if __name__ == "__main__":
     
     elif ENVIRONMENT_TYPE == "random":  
         # 原始的随机环境  
+        random.seed(520)
         ENV_CONFIG['gridnum_width'] = 40  
         ENV_CONFIG['gridnum_height'] = 40  
         grid_width = ENV_CONFIG['gridnum_width']  
@@ -2598,5 +2588,5 @@ if __name__ == "__main__":
         medial_axis_paths=all_paths_to_draw, # 传入所有需要高亮的粗线路径
         env=ENVIRONMENT_TYPE, 
         algorithm=generator_name, 
-        filepath=f"prm_result_{generator_name}_{ENVIRONMENT_TYPE}.pdf"
+        filepath=f"./pursuer_strategies/PRM/results/{ENVIRONMENT_TYPE}/{generator_name}_{ENVIRONMENT_TYPE}_path.pdf"
     )

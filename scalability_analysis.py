@@ -15,7 +15,7 @@ import os
 # 1. 基础配置
 # ─────────────────────────────────────────────
 # ⚠️ 注意: 运行此脚本前，请确保这里的 CSV 文件名和你刚跑完的一致
-DATA_FILE = './pursuer_strategies/PRM/results/scalability_evaluation_202602230628.csv' 
+DATA_FILE = './pursuer_strategies/PRM/results/scalability_evaluation_FAST_202602271411.csv' 
 data = pd.read_csv(DATA_FILE)
 
 # 颜色方案与线型（4种算法）
@@ -48,9 +48,9 @@ env_display_names = {'random': 'Random Environment', 'maze': 'Maze Environment',
 # (已按要求删去 path_nodes_count，如果想替换其它指标可以直接在这里改 column 的名字)
 selected_metrics_config = [
     # 第一行指标
-    {'column': 'path_success',       'title': 'Path Success Rate (%)',   'is_rate': True},
+    {'column': 'path_success_rate',  'title': 'Path Success Rate (%)',   'is_rate': True},   # ← 修复①
     {'column': 'generation_time',    'title': 'Generation Time (s)',     'filter_success': False},
-    {'column': 'actual_nodes_count', 'title': 'Actual Nodes Count',      'filter_success': False},
+    {'column': 'node_utilization',   'title': 'Node Utilization Rate',   'filter_success': False},  # ← 修复②
     {'column': 'edges_count',        'title': 'Graph Edges Count',       'filter_success': False},
     # 第二行指标
     {'column': 'path_length',        'title': 'Average Path Length',     'filter_success': True},
@@ -58,15 +58,13 @@ selected_metrics_config = [
     {'column': 'dispersion',         'title': 'Coverage Dispersion',     'filter_success': False},
     {'column': 'clearance',          'title': 'Path Clearance (Safety)', 'filter_success': True},
 ]
-
 # ─────────────────────────────────────────────
 # 2. 辅助绘图函数
 # ─────────────────────────────────────────────
 def plot_metric_on_ax(ax, algo_data, algo, metric_config):
-    """在 ax 上绘制指定算法的折线 + 标准差阴影"""
     metric_col = metric_config['column']
     if metric_config.get('filter_success', False):
-        algo_data = algo_data[algo_data['path_success'] > 0]
+        algo_data = algo_data[algo_data['path_success_rate'] > 0]  # ← 修复③，原来是 path_success
     
     if len(algo_data) == 0: return False
 
