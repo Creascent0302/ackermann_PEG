@@ -1,0 +1,5 @@
+timestamp,algorithm,environment,num_samples,seed,generation_time,search_time,path_length,edges_count,path_success_rate,dispersion,node_utilization,clearance
+2026-02-27 11:34:03,delta,random,100,100,0.0575,0.0346,6.9244,197,100.0,1.9441,0.1149,0.1534
+2026-02-27 11:34:04,delta,random,200,100,0.227,0.0661,5.0607,882,100.0,0.9231,0.0361,0.167
+2026-02-27 11:34:05,gsrm,random,100,100,0.6103,0.0284,6.144,1098,66.67,0.3019,0.0751,0.1845
+2026-02-27 11:34:07,gsrm,random,200,100,0.5952,0.0281,6.144,1098,66.67,0.3019,0.0751,0.1845

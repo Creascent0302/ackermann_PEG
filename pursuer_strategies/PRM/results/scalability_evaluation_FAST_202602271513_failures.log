@@ -1,0 +1,11 @@
+PRM Scalability Test — Failure Log
+Run time   : 2026-02-27 15:13:45
+Mode       : FAST
+Algorithms : ['gsrm']
+Envs       : ['maze']
+Samples    : [1000]
+Seeds      : [100]
+Path tests : 200 per config
+
+======================================================================
+

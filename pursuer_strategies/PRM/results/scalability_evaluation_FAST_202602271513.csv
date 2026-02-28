@@ -1,0 +1,2 @@
+timestamp,algorithm,environment,num_samples,seed,generation_time,search_time,path_length,edges_count,path_success_rate,dispersion,node_utilization,clearance
+2026-02-27 15:14:00,gsrm,maze,1000,100,5.4329,0.0426,18.6969,2232,100.0,0.3563,0.0934,0.1841
