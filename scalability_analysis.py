@@ -15,7 +15,7 @@ import os
 # ─────────────────────────────────────────────────────────────────────
 # 1. 数据加载
 # ─────────────────────────────────────────────────────────────────────
-DATA_FILE = './pursuer_strategies/PRM/results/scalability_evaluation_FAST_202602271712.csv'
+DATA_FILE = './pursuer_strategies/PRM/results/scalability_evaluation_FAST_202602280234.csv'
 data = pd.read_csv(DATA_FILE)
 
 # 列名对齐检查（防御性输出，方便排查 CSV 与脚本不一致的问题）
@@ -77,8 +77,8 @@ METRICS_CONFIG = [
     },
     # ── 第二行 ────────────────────────────────────────────────────────
     {
-        'column':         'node_utilization',
-        'title':          'Node Utilization Rate',
+        'column':         'spatial_coverage',
+        'title':          'Spatial Coverage',
         'ylabel':         'Utilization',
         'filter_success': False,
         'is_rate':        False,
