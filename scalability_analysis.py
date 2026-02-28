@@ -79,7 +79,7 @@ METRICS_CONFIG = [
     {
         'column':         'spatial_coverage',
         'title':          'Spatial Coverage',
-        'ylabel':         'Utilization',
+        'ylabel':         'Spatial Coverage (%)',
         'filter_success': False,
         'is_rate':        False,
         'ylim_bottom':    0,
