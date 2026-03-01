@@ -1,4 +1,3 @@
-
 import fitz  # PyMuPDF
 import os
 
@@ -24,9 +23,14 @@ def merge_pdfs_to_grid_2x2(pdf_files, titles, output_path, fmt="pdf"):
     cell_height = page_height / grid_rows
 
     margin_outer  = 0   # 整张大图左右两侧外边距
-    margin_inner  = -30    # ← 左右两列之间的间距，0 = 完全贴合
+    margin_inner  = -30 # ← 左右两列之间的间距，0 = 完全贴合
     margin_top    = 20
-    margin_bottom = 70
+    # 修改1: 由于字体调大，将底部留白增加，防止文字被裁切
+    margin_bottom = 110 
+
+    # 修改2: 修改字体大小和字体名称 (tiro = Times Roman，不加粗)
+    my_fontsize = 48
+    my_fontname = "tiro"
 
     for i, (pdf_file, title) in enumerate(zip(pdf_files, titles)):
         if not os.path.exists(pdf_file):
@@ -64,14 +68,16 @@ def merge_pdfs_to_grid_2x2(pdf_files, titles, output_path, fmt="pdf"):
             page.show_pdf_page(target_rect, doc, 0)
 
             title_center_x   = x_start + margin_left + target_width / 2
-            title_y          = img_y + scaled_height + 45
-            text_width       = fitz.get_text_length(title, fontname="tibo", fontsize=32)
+            # 修改3: 下移标题的 Y 坐标以适配大字体
+            title_y          = img_y + scaled_height + 65
+            
+            text_width       = fitz.get_text_length(title, fontname=my_fontname, fontsize=my_fontsize)
             title_x_centered = title_center_x - text_width / 2
 
             page.insert_text(fitz.Point(title_x_centered, title_y),
                              title,
-                             fontsize=32,
-                             fontname="tibo",
+                             fontsize=my_fontsize,
+                             fontname=my_fontname,
                              color=(0, 0, 0))
             doc.close()
 
@@ -93,8 +99,9 @@ def merge_pdfs_to_grid_2x2(pdf_files, titles, output_path, fmt="pdf"):
 def main():
     P = "pursuer_strategies/PRM/results"
 
-    OUTPUT_FORMAT = "svg"
+    OUTPUT_FORMAT = "pdf"
 
+    # 修改4: 将所有 title 的 (a1), (a2), (b1), (b2) 替换为 (a), (b), (c), (d)
     fig1_files = [
         f"{P}/random/beam_random_520.pdf",
         f"{P}/maze/beam_maze_114.pdf",
@@ -102,10 +109,10 @@ def main():
         f"{P}/four_rooms/beam_four_rooms_43.pdf",
     ]
     fig1_titles = [
-        "(a1) BS-PRM  Cluttered",
-        "(a2) BS-PRM  Maze",
-        "(b1) BS-PRM  Indoor",
-        "(b2) BS-PRM  Four Rooms",
+        "(a) BSRM Cluttered",
+        "(b) BSRM Maze",
+        "(c) BSRM Indoor",
+        "(d) BSRM Narrow Passage",
     ]
 
     fig2_files = [
@@ -115,10 +122,10 @@ def main():
         f"{P}/random/gsrm_random.pdf",
     ]
     fig2_titles = [
-        "(a1) BS-PRM Cluttered",
-        "(a2)   -PRM Cluttered",
-        "(b1) SPARS2 Cluttered",
-        "(b2) GSRM  Cluttered",
+        "(a) BS-PRM Cluttered",
+        "(b)   -PRM Cluttered",
+        "(c) SPARS2 Cluttered",
+        "(d) GSRM Cluttered",
     ]
 
     fig3_files = [
@@ -128,10 +135,10 @@ def main():
         f"{P}/maze/gsrm_maze.pdf",
     ]
     fig3_titles = [
-        "(a1) BS-PRM Maze",
-        "(a2)   -PRM Maze",
-        "(b1) SPARS2 Maze",
-        "(b2) GSRM Maze",
+        "(a) BS-PRM Maze",
+        "(b)   -PRM Maze",
+        "(c) SPARS2 Maze",
+        "(d) GSRM Maze",
     ]
 
     fig4_files = [
@@ -141,10 +148,10 @@ def main():
         f"{P}/indoor/gsrm_indoor.pdf",
     ]
     fig4_titles = [
-        "(a1) BS-PRM Indoor",
-        "(a2)   -PRM Indoor",
-        "(b1) SPARS2 Indoor",
-        "(b2) GSRM Indoor",
+        "(a) BS-PRM Indoor",
+        "(b)   -PRM Indoor",
+        "(c) SPARS2 Indoor",
+        "(d) GSRM Indoor",
     ]
 
     out_dir = f"{P}/charts"
