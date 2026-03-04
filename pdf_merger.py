@@ -99,7 +99,7 @@ def merge_pdfs_to_grid_2x2(pdf_files, titles, output_path, fmt="pdf"):
 def main():
     P = "pursuer_strategies/PRM/results"
 
-    OUTPUT_FORMAT = "pdf"
+    OUTPUT_FORMAT = "svg"
 
     # 修改4: 将所有 title 的 (a1), (a2), (b1), (b2) 替换为 (a), (b), (c), (d)
     fig1_files = [
@@ -122,7 +122,7 @@ def main():
         f"{P}/random/gsrm_random.pdf",
     ]
     fig2_titles = [
-        "(a) BS-PRM Cluttered",
+        "(a) BSRM Cluttered",
         "(b)   -PRM Cluttered",
         "(c) SPARS2 Cluttered",
         "(d) GSRM Cluttered",
@@ -135,7 +135,7 @@ def main():
         f"{P}/maze/gsrm_maze.pdf",
     ]
     fig3_titles = [
-        "(a) BS-PRM Maze",
+        "(a) BSRM Maze",
         "(b)   -PRM Maze",
         "(c) SPARS2 Maze",
         "(d) GSRM Maze",
@@ -148,7 +148,7 @@ def main():
         f"{P}/indoor/gsrm_indoor.pdf",
     ]
     fig4_titles = [
-        "(a) BS-PRM Indoor",
+        "(a) BSRM Indoor",
         "(b)   -PRM Indoor",
         "(c) SPARS2 Indoor",
         "(d) GSRM Indoor",

@@ -2542,7 +2542,7 @@ if __name__ == "__main__":
         (nodes, edges) = generator.generate_prm()
         
     elif generator_name == "gsrm":
-        generator = GSRM(grid_width, grid_height, obstacles,iterations=1000)
+        generator = GSRM(grid_width, grid_height, obstacles,iterations=10)
         (nodes, edges) = generator.generate_prm()
 
     end_time = time.time()
